@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     # Local
     'accounts',
     'projects',
+    'documents',
 ]
 
 MIDDLEWARE = [
