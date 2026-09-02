@@ -1,3 +1,12 @@
+﻿# Virtual environment
+.venv/
+venv/
 
-# Local secrets
+# Environment variables — never commit secrets
 .env
+
+# Django
+db.sqlite3
+__pycache__/
+*.pyc
+*.pyo
