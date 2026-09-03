@@ -1,0 +1,7 @@
+# PDF text extraction
+pypdf==5.1.0
+
+# boto3 is pre-installed in the Lambda Python base image, but pinned
+# here so the Dockerfile produces a reproducible build.
+boto3==1.35.99
+
