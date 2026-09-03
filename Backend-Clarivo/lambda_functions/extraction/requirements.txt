@@ -1,7 +1,12 @@
 # PDF text extraction
 pypdf==5.1.0
 
-# boto3 is pre-installed in the Lambda Python base image, but pinned
-# here so the Dockerfile produces a reproducible build.
+# Image OCR (Tesseract wrapper + image loading)
+pytesseract==0.3.13
+Pillow==11.1.0
+
+# AWS SDK — no longer pre-installed since we use python:3.12-slim.
 boto3==1.35.99
 
+# Lambda runtime interface client (replaces the one built into the AWS base image).
+awslambdaric==3.0.0

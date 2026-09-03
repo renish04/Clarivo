@@ -2,7 +2,8 @@
 AWS Lambda handler — text extraction for uploaded documents.
 
 Triggered by S3 PutObject events.  Downloads the file, extracts raw
-text (PDF only for now), and updates the matching DynamoDB record.
+text (PDF via pypdf, JPG/JPEG via Tesseract OCR), and updates the
+matching DynamoDB record.
 
 Environment variables
 ---------------------
@@ -20,7 +21,9 @@ import tempfile
 import urllib.parse
 
 import boto3
+from PIL import Image
 from pypdf import PdfReader
+import pytesseract
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -47,6 +50,13 @@ def _extract_text_from_pdf(file_path: str) -> str:
         if text:
             pages_text.append(text)
     return "\n".join(pages_text)
+
+
+def _extract_text_from_image(file_path: str) -> str:
+    """Return OCR text from a JPG/JPEG image using Tesseract."""
+    image = Image.open(file_path)
+    text = pytesseract.image_to_string(image)
+    return text.strip()
 
 
 def _parse_s3_key(key: str) -> dict:
@@ -106,9 +116,12 @@ def lambda_handler(event, context):
                     "Extracted %d characters of text from PDF", len(body)
                 )
             elif ext in IMAGE_EXTENSIONS:
-                body = None
-                new_status = "pending_ocr"
-                logger.info("Image file detected — marked as pending_ocr")
+                body = _extract_text_from_image(tmp_path)
+                new_status = "extracted"
+                logger.info(
+                    "Extracted %d characters of text from image via OCR",
+                    len(body),
+                )
             else:
                 body = None
                 new_status = "pending_ocr"
