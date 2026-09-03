@@ -21,7 +21,7 @@ import tempfile
 import urllib.parse
 
 import boto3
-from PIL import Image
+from PIL import Image, ImageFilter
 from pypdf import PdfReader
 import pytesseract
 
@@ -53,8 +53,27 @@ def _extract_text_from_pdf(file_path: str) -> str:
 
 
 def _extract_text_from_image(file_path: str) -> str:
-    """Return OCR text from a JPG/JPEG image using Tesseract."""
-    image = Image.open(file_path)
+    """Return OCR text from a JPG/JPEG image using Tesseract.
+
+    Preprocessing steps to improve OCR accuracy on noisy or
+    phone-captured images:
+      1. Convert to grayscale.
+      2. Scale up 2× (helps Tesseract with smaller text).
+      3. Gaussian blur to reduce moiré / camera noise.
+      4. Binary threshold to produce clean black-on-white text.
+    """
+    image = Image.open(file_path).convert("L")
+
+    # Scale up for better character recognition on smaller text.
+    width, height = image.size
+    image = image.resize((width * 2, height * 2), Image.LANCZOS)
+
+    # Light blur smooths out moiré patterns and camera noise.
+    image = image.filter(ImageFilter.GaussianBlur(radius=1))
+
+    # Binarize: pixels above the threshold become white, rest black.
+    image = image.point(lambda px: 255 if px > 140 else 0)
+
     text = pytesseract.image_to_string(image)
     return text.strip()
 
