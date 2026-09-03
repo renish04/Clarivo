@@ -144,7 +144,19 @@ export default function FilesTab() {
                     {doc.filename}
                   </a>
                 </td>
-                <td className="py-3 px-4 text-gray-600">{doc.status}</td>
+                <td className="py-3 px-4">
+                  <span
+                    className={`inline-block px-2 py-0.5 text-xs font-medium rounded-full ${
+                      doc.status === 'extracted'
+                        ? 'bg-green-100 text-green-700'
+                        : doc.status === 'pending_extraction' || doc.status === 'pending_ocr'
+                          ? 'bg-amber-100 text-amber-700'
+                          : 'bg-gray-100 text-gray-600'
+                    }`}
+                  >
+                    {doc.status}
+                  </span>
+                </td>
               </tr>
             ))}
           </tbody>
