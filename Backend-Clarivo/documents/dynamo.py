@@ -117,3 +117,26 @@ def update_document_classification(project_id, doc_id, doc_type, new_status):
         ReturnValues="ALL_NEW",
     )
     return response.get("Attributes")
+
+def update_document_check_results(project_id, doc_id, discrepancy_status, findings, resolution, table_row_markdown, new_status):
+    """
+    Save the results from detect_discrepancies into the document record,
+    and update its status to 'checked'.
+    """
+    response = _table.update_item(
+        Key={
+            "PK": f"PROJECT#{project_id}",
+            "SK": f"DOC#{doc_id}",
+        },
+        UpdateExpression="SET discrepancy_status = :ds, findings = :f, resolution = :r, table_row_markdown = :trm, #s = :status",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={
+            ":ds": discrepancy_status,
+            ":f": findings,
+            ":r": resolution,
+            ":trm": table_row_markdown,
+            ":status": new_status
+        },
+        ReturnValues="ALL_NEW",
+    )
+    return response.get("Attributes")
