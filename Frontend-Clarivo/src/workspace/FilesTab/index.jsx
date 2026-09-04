@@ -10,6 +10,7 @@ export default function FilesTab() {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
   const [indexingDocs, setIndexingDocs] = useState(new Set());
+  const [classifyingDocs, setClassifyingDocs] = useState(new Set());
 
   const fetchDocuments = useCallback(async (silent = false) => {
     const isSilent = silent === true;
@@ -39,6 +40,34 @@ export default function FilesTab() {
             .catch(console.error)
             .finally(() => {
               setIndexingDocs(prev => {
+                const next = new Set(prev);
+                docIds.forEach(id => next.delete(id));
+                return next;
+              });
+            });
+        });
+      }
+
+      const embeddedDocs = res.data.filter(doc => doc.status === 'embedded');
+      if (embeddedDocs.length > 0) {
+        const docIds = embeddedDocs.map(doc => doc.SK.replace('DOC#', ''));
+        
+        setClassifyingDocs(prev => {
+          const next = new Set(prev);
+          docIds.forEach(id => next.add(id));
+          return next;
+        });
+
+        Promise.allSettled(
+          docIds.map(id => client.post(`/projects/${projectId}/documents/${id}/classify/`))
+        ).then(() => {
+          client.get(`/projects/${projectId}/documents/`)
+            .then(refreshRes => {
+              setDocuments(refreshRes.data);
+            })
+            .catch(console.error)
+            .finally(() => {
+              setClassifyingDocs(prev => {
                 const next = new Set(prev);
                 docIds.forEach(id => next.delete(id));
                 return next;
@@ -160,6 +189,7 @@ export default function FilesTab() {
           <thead>
             <tr className="border-b border-gray-200 text-gray-500 uppercase text-xs">
               <th className="py-3 px-4 font-medium">Filename</th>
+              <th className="py-3 px-4 font-medium">Type</th>
               <th className="py-3 px-4 font-medium">Status</th>
             </tr>
           </thead>
@@ -167,6 +197,7 @@ export default function FilesTab() {
             {documents.map((doc) => {
               const docId = doc.SK.replace('DOC#', '');
               const isIndexing = indexingDocs.has(docId);
+              const isClassifying = classifyingDocs.has(docId);
               
               return (
                 <tr key={doc.SK} className="border-b border-gray-100 hover:bg-gray-50">
@@ -180,21 +211,34 @@ export default function FilesTab() {
                       {doc.filename}
                     </a>
                   </td>
+                  <td className="py-3 px-4 text-gray-600">
+                    {doc.doc_type ? (
+                      <span className="capitalize">{doc.doc_type}</span>
+                    ) : (
+                      <span className="text-gray-400 italic">Unknown</span>
+                    )}
+                  </td>
                   <td className="py-3 px-4">
                     {isIndexing ? (
                       <span className="inline-block px-2 py-0.5 text-xs font-medium rounded-full bg-blue-100 text-blue-700">
                         Indexing...
                       </span>
+                    ) : isClassifying ? (
+                      <span className="inline-block px-2 py-0.5 text-xs font-medium rounded-full bg-teal-100 text-teal-700">
+                        Classifying...
+                      </span>
                     ) : (
                       <span
                         className={`inline-block px-2 py-0.5 text-xs font-medium rounded-full ${
-                          doc.status === 'embedded'
-                            ? 'bg-purple-100 text-purple-700'
-                            : doc.status === 'extracted'
-                              ? 'bg-green-100 text-green-700'
-                              : doc.status === 'pending_extraction' || doc.status === 'pending_ocr'
-                                ? 'bg-amber-100 text-amber-700'
-                                : 'bg-gray-100 text-gray-600'
+                          doc.status === 'classified'
+                            ? 'bg-emerald-100 text-emerald-700'
+                            : doc.status === 'embedded'
+                              ? 'bg-purple-100 text-purple-700'
+                              : doc.status === 'extracted'
+                                ? 'bg-green-100 text-green-700'
+                                : doc.status === 'pending_extraction' || doc.status === 'pending_ocr'
+                                  ? 'bg-amber-100 text-amber-700'
+                                  : 'bg-gray-100 text-gray-600'
                         }`}
                       >
                         {doc.status}

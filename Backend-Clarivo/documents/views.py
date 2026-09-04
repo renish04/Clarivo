@@ -200,3 +200,37 @@ class EmbedDocumentView(APIView):
         updated = update_document_status(project_id, doc_id, "embedded")
         return Response(updated, status=status.HTTP_200_OK)
 
+
+class ClassifyDocumentView(APIView):
+    """
+    POST /api/projects/<project_id>/documents/<doc_id>/classify/
+
+    Calls Gemini to classify the document and updates the status to 'classified'.
+    """
+
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, project_id, doc_id):
+        # Verify the project exists and belongs to the requesting user.
+        get_object_or_404(
+            Project.objects.filter(owner=request.user),
+            pk=project_id,
+        )
+
+        from detection.classify import classify_document
+        from documents.dynamo import get_document
+
+        doc = get_document(project_id, doc_id)
+        if doc is None:
+            return Response(
+                {"detail": "Document not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Classify the document. The function updates DynamoDB internally.
+        classify_document(project_id, doc_id)
+
+        # Return the updated document to the client
+        updated_doc = get_document(project_id, doc_id)
+        return Response(updated_doc, status=status.HTTP_200_OK)
