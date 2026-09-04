@@ -37,11 +37,10 @@ def classify_document(project_id, doc_id):
     
     try:
         response = gemini_client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=body,
+            model='gemini-3.8-flash',
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
-                temperature=0.0,
+                temperature=0.2,
             )
         )
         
