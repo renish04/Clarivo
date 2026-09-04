@@ -26,7 +26,7 @@ def get_project_context(project_id, exclude_doc_id, query_text, token_budget=200
         response = collection.query.hybrid(
             query=query_text,
             vector=query_vector,
-            alpha=0.7 #1.0 is pure semantic, 0.0 is pure keyword!
+            alpha=0.7, #1.0 is pure semantic, 0.0 is pure keyword!
             limit=500,  # Generous max limit
             filters=(
                 Filter.by_property("project_id").equal(str(project_id)) &

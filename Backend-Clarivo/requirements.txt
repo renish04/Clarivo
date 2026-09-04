@@ -17,6 +17,7 @@ fastembed==0.8.0
 filelock==3.32.5
 flatbuffers==25.12.19
 fsspec==2026.7.0
+google-genai==0.3.0
 grpcio==1.78.0
 h11==0.16.0
 hf-xet==1.6.0
