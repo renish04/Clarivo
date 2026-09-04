@@ -75,3 +75,39 @@ class CheckProjectView(APIView):
                 time.sleep(2)
 
         return Response(summary, status=status.HTTP_200_OK)
+
+
+class DiscrepancyTableView(APIView):
+    """
+    GET /api/projects/<project_id>/discrepancy-table/
+
+    Returns a combined markdown table of all checked documents.
+    """
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, project_id):
+        # Verify the project exists and belongs to the requesting user.
+        get_object_or_404(
+            Project.objects.filter(owner=request.user),
+            pk=project_id,
+        )
+
+        all_docs = list_documents(project_id)
+        checked_docs = [doc for doc in all_docs if doc.get("status") == "checked" and doc.get("table_row_markdown")]
+
+        if not checked_docs:
+            return Response({"markdown": ""}, status=status.HTTP_200_OK)
+
+        # Assemble the markdown table
+        header = "| Document | Status | Issue | Details |\n|---|---|---|---|\n"
+        rows = []
+        for doc in checked_docs:
+            row = doc.get("table_row_markdown", "").strip()
+            if row:
+                rows.append(row)
+
+        combined_markdown = header + "\n".join(rows)
+
+        return Response({"markdown": combined_markdown}, status=status.HTTP_200_OK)
+
