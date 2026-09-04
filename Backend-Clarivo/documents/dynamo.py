@@ -100,3 +100,20 @@ def update_document_status(project_id, doc_id, new_status):
     return response.get("Attributes")
 
 
+def update_document_classification(project_id, doc_id, doc_type, new_status):
+    """
+    Set the doc_type and status attributes on an existing document record.
+
+    Returns the full updated item dict.
+    """
+    response = _table.update_item(
+        Key={
+            "PK": f"PROJECT#{project_id}",
+            "SK": f"DOC#{doc_id}",
+        },
+        UpdateExpression="SET #t = :doc_type, #s = :status",
+        ExpressionAttributeNames={"#t": "doc_type", "#s": "status"},
+        ExpressionAttributeValues={":doc_type": doc_type, ":status": new_status},
+        ReturnValues="ALL_NEW",
+    )
+    return response.get("Attributes")
