@@ -2,8 +2,8 @@
 AWS Lambda handler — text extraction for uploaded documents.
 
 Triggered by S3 PutObject events.  Downloads the file, extracts raw
-text (PDF via pypdf, JPG/JPEG via Tesseract OCR), and updates the
-matching DynamoDB record.
+text (PDF via pypdf, JPG/JPEG via AWS Textract with Tesseract as
+fallback), and updates the matching DynamoDB record.
 
 Environment variables
 ---------------------
@@ -35,6 +35,7 @@ S3_KEY_PATTERN = re.compile(
 
 # Initialise AWS clients once per container (re-used across invocations).
 s3_client = boto3.client("s3")
+textract_client = boto3.client("textract", region_name=os.environ.get("AWS_REGION"))
 dynamodb = boto3.resource("dynamodb", region_name=os.environ.get("AWS_REGION"))
 table = dynamodb.Table(os.environ.get("DYNAMODB_TABLE_NAME", "clarivo-documents"))
 
@@ -52,8 +53,25 @@ def _extract_text_from_pdf(file_path: str) -> str:
     return "\n".join(pages_text)
 
 
-def _extract_text_from_image(file_path: str) -> str:
-    """Return OCR text from a JPG/JPEG image using Tesseract.
+def _textract_ocr(file_path: str) -> str:
+    """Extract text from an image using AWS Textract DetectDocumentText."""
+    with open(file_path, "rb") as f:
+        image_bytes = f.read()
+
+    response = textract_client.detect_document_text(
+        Document={"Bytes": image_bytes}
+    )
+
+    lines = [
+        block["Text"]
+        for block in response["Blocks"]
+        if block["BlockType"] == "LINE"
+    ]
+    return "\n".join(lines)
+
+
+def _tesseract_ocr(file_path: str) -> str:
+    """Fallback: extract text from an image using Tesseract.
 
     Preprocessing steps to improve OCR accuracy:
       1. Convert to grayscale.
@@ -86,6 +104,23 @@ def _extract_text_from_image(file_path: str) -> str:
     custom_config = "--oem 3 --psm 6"
     text = pytesseract.image_to_string(image, config=custom_config)
     return text.strip()
+
+
+def _extract_text_from_image(file_path: str) -> str:
+    """Extract text from a JPG/JPEG image.
+
+    Tries AWS Textract first (higher accuracy).  Falls back to the
+    local Tesseract engine if Textract is unavailable or errors out.
+    """
+    try:
+        text = _textract_ocr(file_path)
+        logger.info("Image OCR completed via Textract")
+        return text
+    except Exception:
+        logger.warning(
+            "Textract failed — falling back to Tesseract", exc_info=True
+        )
+        return _tesseract_ocr(file_path)
 
 
 def _parse_s3_key(key: str) -> dict:
