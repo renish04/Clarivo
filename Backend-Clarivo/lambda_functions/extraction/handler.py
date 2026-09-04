@@ -21,7 +21,7 @@ import tempfile
 import urllib.parse
 
 import boto3
-from PIL import Image, ImageFilter
+from PIL import Image, ImageFilter, ImageOps
 from pypdf import PdfReader
 import pytesseract
 
@@ -55,12 +55,13 @@ def _extract_text_from_pdf(file_path: str) -> str:
 def _extract_text_from_image(file_path: str) -> str:
     """Return OCR text from a JPG/JPEG image using Tesseract.
 
-    Preprocessing steps to improve OCR accuracy on noisy or
-    phone-captured images:
+    Preprocessing steps to improve OCR accuracy:
       1. Convert to grayscale.
-      2. Scale up 2× (helps Tesseract with smaller text).
-      3. Gaussian blur to reduce moiré / camera noise.
-      4. Binary threshold to produce clean black-on-white text.
+      2. Scale up 2× so small text reaches Tesseract's optimal size.
+      3. Auto-contrast to normalise brightness across the image.
+      4. Sharpen edges with UnsharpMask (better than blur for clean docs).
+      5. Binary threshold to produce clean black-on-white text.
+      6. Set DPI to 300 (Tesseract's optimal input resolution).
     """
     image = Image.open(file_path).convert("L")
 
@@ -68,13 +69,22 @@ def _extract_text_from_image(file_path: str) -> str:
     width, height = image.size
     image = image.resize((width * 2, height * 2), Image.LANCZOS)
 
-    # Light blur smooths out moiré patterns and camera noise.
-    image = image.filter(ImageFilter.GaussianBlur(radius=1))
+    # Normalise brightness so the threshold works across varied lighting.
+    image = ImageOps.autocontrast(image)
+
+    # Sharpen text edges — UnsharpMask enhances detail that blur destroys.
+    image = image.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
 
     # Binarize: pixels above the threshold become white, rest black.
-    image = image.point(lambda px: 255 if px > 140 else 0)
+    image = image.point(lambda px: 255 if px > 150 else 0)
 
-    text = pytesseract.image_to_string(image)
+    # Tesseract is tuned for 300 DPI input.
+    image.info["dpi"] = (300, 300)
+
+    # --oem 3 = LSTM neural-net engine (best accuracy).
+    # --psm 6 = assume a single uniform block of text.
+    custom_config = "--oem 3 --psm 6"
+    text = pytesseract.image_to_string(image, config=custom_config)
     return text.strip()
 
 
