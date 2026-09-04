@@ -65,3 +65,38 @@ def list_documents(project_id):
     )
     return response.get("Items", [])
 
+
+def get_document(project_id, doc_id):
+    """
+    Fetch a single document record from DynamoDB.
+
+    Returns the item dict, or ``None`` if no matching record exists.
+    """
+    response = _table.get_item(
+        Key={
+            "PK": f"PROJECT#{project_id}",
+            "SK": f"DOC#{doc_id}",
+        },
+    )
+    return response.get("Item")
+
+
+def update_document_status(project_id, doc_id, new_status):
+    """
+    Set the ``status`` attribute on an existing document record.
+
+    Returns the full updated item dict.
+    """
+    response = _table.update_item(
+        Key={
+            "PK": f"PROJECT#{project_id}",
+            "SK": f"DOC#{doc_id}",
+        },
+        UpdateExpression="SET #s = :status",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":status": new_status},
+        ReturnValues="ALL_NEW",
+    )
+    return response.get("Attributes")
+
+

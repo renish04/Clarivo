@@ -10,6 +10,7 @@ context-manager block.
 import weaviate
 from django.conf import settings
 from weaviate.classes.config import Configure, DataType, Property
+from weaviate.classes.data import DataObject
 from weaviate.classes.init import Auth
 
 # Collection name — single source of truth so every module agrees.
@@ -72,4 +73,56 @@ def ensure_collection_exists(client: weaviate.WeaviateClient) -> None:
             Property(name="chunk_index", data_type=DataType.INT),
         ],
     )
+
+
+def embed_document(project_id: str, doc_id: str, body_text: str) -> int:
+    """Chunk, embed, and index a document into Weaviate.
+
+    1. Splits *body_text* into overlapping chunks via ``chunk_text``.
+    2. Computes a 384-dim embedding for each chunk via ``embed_text``.
+    3. Batch-inserts all chunks into the ``DocumentChunk`` collection
+       with their self-provided vectors.
+
+    Parameters
+    ----------
+    project_id : str
+        The Django project PK (as a string).
+    doc_id : str
+        The UUID of the document in DynamoDB.
+    body_text : str
+        The full extracted text of the document.
+
+    Returns
+    -------
+    int
+        The number of chunks successfully inserted.
+    """
+    from documents.embeddings import chunk_text, embed_text
+
+    chunks = chunk_text(body_text)
+
+    data_objects = []
+    for idx, chunk in enumerate(chunks):
+        vector = embed_text(chunk)
+        data_objects.append(
+            DataObject(
+                properties={
+                    "project_id": str(project_id),
+                    "doc_id": doc_id,
+                    "chunk_text": chunk,
+                    "chunk_index": idx,
+                },
+                vector=vector,
+            )
+        )
+
+    client = get_weaviate_client()
+    try:
+        ensure_collection_exists(client)
+        collection = client.collections.get(COLLECTION_NAME)
+        collection.data.insert_many(data_objects)
+    finally:
+        client.close()
+
+    return len(data_objects)
 

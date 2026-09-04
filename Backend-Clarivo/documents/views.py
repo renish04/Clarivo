@@ -152,3 +152,51 @@ class DocumentListView(APIView):
             )
 
         return Response(items, status=status.HTTP_200_OK)
+
+
+class EmbedDocumentView(APIView):
+    """
+    POST /api/projects/<project_id>/documents/<doc_id>/embed/
+
+    Fetches the document's extracted body from DynamoDB, chunks and
+    embeds it into Weaviate, then updates the document status to
+    ``embedded``.
+    """
+
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, project_id, doc_id):
+        # Verify the project exists and belongs to the requesting user.
+        get_object_or_404(
+            Project.objects.filter(owner=request.user),
+            pk=project_id,
+        )
+
+        from documents.dynamo import get_document, update_document_status
+
+        doc = get_document(project_id, doc_id)
+        if doc is None:
+            return Response(
+                {"detail": "Document not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        body_text = doc.get("body", "")
+        if not body_text:
+            return Response(
+                {"detail": "Document has no extracted text yet."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        from documents.weaviate_client import embed_document
+
+        embed_document(
+            project_id=str(project_id),
+            doc_id=doc_id,
+            body_text=body_text,
+        )
+
+        updated = update_document_status(project_id, doc_id, "embedded")
+        return Response(updated, status=status.HTTP_200_OK)
+
