@@ -93,7 +93,7 @@ def detect_discrepancies(project_id, doc_id):
     raw_text = ""
     try:
         response = gemini_client.models.generate_content(
-            model='gemini-3.8-flash',
+            model='gemini-3.6-flash',
             contents=user_message,
             config=types.GenerateContentConfig(
                 system_instruction=DETECTION_SYSTEM_PROMPT,
