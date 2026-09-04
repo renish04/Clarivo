@@ -9,24 +9,56 @@ export default function FilesTab() {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
+  const [indexingDocs, setIndexingDocs] = useState(new Set());
 
-  const fetchDocuments = useCallback(async () => {
+  const fetchDocuments = useCallback(async (silent = false) => {
+    const isSilent = silent === true;
     try {
-      setLoading(true);
+      if (!isSilent) setLoading(true);
       setError('');
       const res = await client.get(`/projects/${projectId}/documents/`);
       setDocuments(res.data);
+
+      const extractedDocs = res.data.filter(doc => doc.status === 'extracted');
+      if (extractedDocs.length > 0) {
+        const docIds = extractedDocs.map(doc => doc.SK.replace('DOC#', ''));
+        
+        setIndexingDocs(prev => {
+          const next = new Set(prev);
+          docIds.forEach(id => next.add(id));
+          return next;
+        });
+
+        Promise.allSettled(
+          docIds.map(id => client.post(`/projects/${projectId}/documents/${id}/embed/`))
+        ).then(() => {
+          client.get(`/projects/${projectId}/documents/`)
+            .then(refreshRes => {
+              setDocuments(refreshRes.data);
+            })
+            .catch(console.error)
+            .finally(() => {
+              setIndexingDocs(prev => {
+                const next = new Set(prev);
+                docIds.forEach(id => next.delete(id));
+                return next;
+              });
+            });
+        });
+      }
     } catch (err) {
       console.error(err);
-      setError('Failed to load documents.');
+      if (!isSilent) setError('Failed to load documents.');
     } finally {
-      setLoading(false);
+      if (!isSilent) setLoading(false);
     }
   }, [projectId]);
 
   useEffect(() => {
     fetchDocuments();
   }, [fetchDocuments]);
+
+  const handleRefreshClick = () => fetchDocuments(false);
 
   const handleFileSelect = async (e) => {
     const file = e.target.files[0];
@@ -110,7 +142,7 @@ export default function FilesTab() {
             />
           </label>
           <button
-            onClick={fetchDocuments}
+            onClick={handleRefreshClick}
             disabled={uploading}
             className="px-3 py-1.5 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200 transition-colors disabled:opacity-50"
           >
@@ -132,33 +164,46 @@ export default function FilesTab() {
             </tr>
           </thead>
           <tbody>
-            {documents.map((doc) => (
-              <tr key={doc.SK} className="border-b border-gray-100 hover:bg-gray-50">
-                <td className="py-3 px-4">
-                  <a
-                    href={doc.view_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-blue-600 hover:underline"
-                  >
-                    {doc.filename}
-                  </a>
-                </td>
-                <td className="py-3 px-4">
-                  <span
-                    className={`inline-block px-2 py-0.5 text-xs font-medium rounded-full ${
-                      doc.status === 'extracted'
-                        ? 'bg-green-100 text-green-700'
-                        : doc.status === 'pending_extraction' || doc.status === 'pending_ocr'
-                          ? 'bg-amber-100 text-amber-700'
-                          : 'bg-gray-100 text-gray-600'
-                    }`}
-                  >
-                    {doc.status}
-                  </span>
-                </td>
-              </tr>
-            ))}
+            {documents.map((doc) => {
+              const docId = doc.SK.replace('DOC#', '');
+              const isIndexing = indexingDocs.has(docId);
+              
+              return (
+                <tr key={doc.SK} className="border-b border-gray-100 hover:bg-gray-50">
+                  <td className="py-3 px-4">
+                    <a
+                      href={doc.view_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-600 hover:underline"
+                    >
+                      {doc.filename}
+                    </a>
+                  </td>
+                  <td className="py-3 px-4">
+                    {isIndexing ? (
+                      <span className="inline-block px-2 py-0.5 text-xs font-medium rounded-full bg-blue-100 text-blue-700">
+                        Indexing...
+                      </span>
+                    ) : (
+                      <span
+                        className={`inline-block px-2 py-0.5 text-xs font-medium rounded-full ${
+                          doc.status === 'embedded'
+                            ? 'bg-purple-100 text-purple-700'
+                            : doc.status === 'extracted'
+                              ? 'bg-green-100 text-green-700'
+                              : doc.status === 'pending_extraction' || doc.status === 'pending_ocr'
+                                ? 'bg-amber-100 text-amber-700'
+                                : 'bg-gray-100 text-gray-600'
+                        }`}
+                      >
+                        {doc.status}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}
