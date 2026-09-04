@@ -65,7 +65,6 @@ def ensure_collection_exists(client: weaviate.WeaviateClient) -> None:
 
     client.collections.create(
         name=COLLECTION_NAME,
-        vectorizer_config=Configure.Vectorizer.none(),
         properties=[
             Property(name="project_id", data_type=DataType.TEXT),
             Property(name="doc_id", data_type=DataType.TEXT),
