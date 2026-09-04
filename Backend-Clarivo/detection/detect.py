@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from google import genai
 from google.genai import types
 
@@ -9,6 +10,42 @@ from detection.prompts import DETECTION_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 gemini_client = genai.Client()
+
+def _normalize_text(text: str) -> str:
+    """Strips currency symbols, commas, extra whitespace, and lowercases text."""
+    if not text:
+        return ""
+    # Lowercase
+    text = text.lower()
+    # Remove currency symbols and commas
+    text = re.sub(r'[$£€,]', '', text)
+    # Collapse whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+def verify_grounding(findings, context_text):
+    """
+    Checks each evidence claim against the context text.
+    Marks evidence['verified'] = True/False.
+    """
+    norm_context = _normalize_text(context_text)
+    
+    for finding in findings:
+        evidence_list = finding.get("evidence", [])
+        for evidence in evidence_list:
+            claim = evidence.get("claim", "")
+            if not claim:
+                evidence["verified"] = False
+                continue
+                
+            norm_claim = _normalize_text(claim)
+            
+            if norm_claim and norm_claim in norm_context:
+                evidence["verified"] = True
+            else:
+                evidence["verified"] = False
+                
+    return findings
 
 def fallback_response(filename):
     """Returns a safe fallback dict if generation or parsing fails."""
@@ -77,6 +114,11 @@ def detect_discrepancies(project_id, doc_id):
             
         # Parse JSON
         result_dict = json.loads(raw_text)
+        
+        # Verify grounding against the user_message which contains both the invoice and the context
+        if "findings" in result_dict:
+            result_dict["findings"] = verify_grounding(result_dict["findings"], user_message)
+            
         return result_dict
         
     except json.JSONDecodeError as e:
