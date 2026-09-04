@@ -157,3 +157,9 @@ AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY', '')
 AWS_REGION = os.environ.get('AWS_REGION', '')
 S3_BUCKET_NAME = os.environ.get('S3_BUCKET_NAME', '')
 DYNAMODB_TABLE_NAME = os.environ.get('DYNAMODB_TABLE_NAME', '')
+
+# ---------------------------------------------------------------------------
+# Weaviate Cloud — loaded from .env
+# ---------------------------------------------------------------------------
+WEAVIATE_URL = os.environ.get('WEAVIATE_URL', '')
+WEAVIATE_API_KEY = os.environ.get('WEAVIATE_API_KEY', '')
