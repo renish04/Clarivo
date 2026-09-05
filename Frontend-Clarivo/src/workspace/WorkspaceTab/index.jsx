@@ -56,7 +56,7 @@ export default function WorkspaceTab() {
   );
 
   return (
-    <div className="p-6 space-y-6 max-w-6xl mx-auto">
+    <div className="h-full flex flex-col p-8 overflow-y-auto custom-scrollbar bg-gray-50/50 space-y-8">
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold text-gray-800">Project Discrepancies</h2>
         <button 

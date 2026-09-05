@@ -1,9 +1,10 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Login from './pages/Login';
-import ProjectList from './pages/ProjectList';
 import ProjectWorkspace from './pages/ProjectWorkspace';
 import Landing from './pages/Landing';
+import ProjectsLayout from './layouts/ProjectsLayout';
+import ProjectHome from './pages/ProjectHome';
 
 // Simple Route Guard Component
 function PrivateRoute({ children }) {
@@ -26,23 +27,19 @@ export default function App() {
         <Route path="/" element={<Landing />} />
         <Route path="/login" element={<Login />} />
         
-        {/* Protected Routes */}
+        {/* Protected Routes with ProjectsLayout wrapper */}
         <Route 
           path="/projects" 
           element={
             <PrivateRoute>
-              <ProjectList />
+              <ProjectsLayout />
             </PrivateRoute>
           } 
-        />
-        <Route 
-          path="/projects/:id" 
-          element={
-            <PrivateRoute>
-              <ProjectWorkspace />
-            </PrivateRoute>
-          } 
-        />
+        >
+          <Route index element={<ProjectHome />} />
+          <Route path=":id" element={<ProjectWorkspace />} />
+        </Route>
+
         
         {/* Catch-all redirect to home */}
         <Route path="*" element={<Navigate to="/" replace />} />
