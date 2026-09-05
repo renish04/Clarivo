@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Login from './pages/Login';
 import ProjectList from './pages/ProjectList';
 import ProjectWorkspace from './pages/ProjectWorkspace';
+import Landing from './pages/Landing';
 
 // Simple Route Guard Component
 function PrivateRoute({ children }) {
@@ -21,6 +22,8 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
+        {/* Public Routes */}
+        <Route path="/" element={<Landing />} />
         <Route path="/login" element={<Login />} />
         
         {/* Protected Routes */}
@@ -40,12 +43,9 @@ export default function App() {
             </PrivateRoute>
           } 
         />
-
-        {/* Redirect root to projects by default */}
-        <Route path="/" element={<Navigate to="/projects" replace />} />
         
-        {/* Catch-all redirect */}
-        <Route path="*" element={<Navigate to="/projects" replace />} />
+        {/* Catch-all redirect to home */}
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
   );
