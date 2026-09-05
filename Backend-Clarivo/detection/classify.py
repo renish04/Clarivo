@@ -11,13 +11,15 @@ def classify_document(project_id, doc_id):
     Fetches the document from DynamoDB, calls Gemini to classify its intent based on the text,
     and updates the DynamoDB record with doc_type and a 'classified' status.
     """
+    print(f"\n--- [CLASSIFY] Starting classification for Doc {doc_id} (Project {project_id}) ---")
     doc_item = get_document(project_id, doc_id)
     if not doc_item:
+        print(f"[CLASSIFY] ERROR: Document {doc_id} not found in DynamoDB.")
         raise ValueError(f"Document {doc_id} for project {project_id} not found in DynamoDB.")
     
     body = doc_item.get("body", "")
     if not body:
-        # If there is no body, it's safer to default to "other"
+        print(f"[CLASSIFY] WARNING: Document body is empty. Defaulting to 'other'.")
         update_document_classification(project_id, doc_id, "other", "classified")
         return "other"
     
@@ -36,8 +38,9 @@ def classify_document(project_id, doc_id):
     )
     
     try:
+        print(f"[CLASSIFY] Calling Gemini (gemini-3.8-flash) for intent classification...")
         response = gemini_client.models.generate_content(
-            model='gemini-3.6-flash',
+            model='gemini-3.8-flash',
             contents=body,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
@@ -45,19 +48,24 @@ def classify_document(project_id, doc_id):
             )
         )
         
+        print(f"[CLASSIFY] Gemini raw response: '{response.text.strip()}'")
         result_text = response.text.strip().lower()
         # Clean up any trailing punctuation just in case
         result_text = ''.join(c for c in result_text if c.isalnum())
         
         allowed_types = {"invoice", "order", "delivery", "governing", "other"}
         if result_text not in allowed_types:
+            print(f"[CLASSIFY] WARNING: Response '{result_text}' not in allowed types. Defaulting to 'other'.")
             result_text = "other"
+        else:
+            print(f"[CLASSIFY] SUCCESS: Parsed type as '{result_text}'.")
             
     except Exception as e:
-        # Default to "other" rather than crashing on API errors
-        print(f"Gemini API error during classification: {e}")
+        print(f"[CLASSIFY] ERROR: Gemini API error during classification: {e}")
         result_text = "other"
         
+    print(f"[CLASSIFY] Updating DynamoDB with doc_type='{result_text}' and status='classified'")
     update_document_classification(project_id, doc_id, result_text, "classified")
+    print(f"--- [CLASSIFY] Complete ---")
     return result_text
 

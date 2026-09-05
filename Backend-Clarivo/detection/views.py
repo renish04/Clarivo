@@ -23,6 +23,7 @@ class CheckProjectView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, project_id):
+        print(f"\n=== [CHECK ENDPOINT] Triggered for Project {project_id} ===")
         # Verify the project exists and belongs to the requesting user.
         get_object_or_404(
             Project.objects.filter(owner=request.user),
@@ -36,6 +37,8 @@ class CheckProjectView(APIView):
             doc for doc in all_docs
             if doc.get("doc_type") == "invoice" and doc.get("status") == "classified"
         ]
+        
+        print(f"[CHECK ENDPOINT] Found {len(invoices_to_check)} invoices waiting to be checked.")
 
         summary = {
             "clean": 0,
@@ -46,6 +49,7 @@ class CheckProjectView(APIView):
 
         for i, doc in enumerate(invoices_to_check):
             doc_id = doc["SK"].replace("DOC#", "")
+            print(f"\n[CHECK ENDPOINT] Processing invoice {i+1}/{len(invoices_to_check)} (Doc {doc_id})...")
             
             # Detect discrepancies (verify_grounding is already baked inside detect_discrepancies)
             result = detect_discrepancies(project_id, doc_id)
@@ -59,6 +63,7 @@ class CheckProjectView(APIView):
                 summary["needs_more_info"] += 1
                 discrepancy_status = "needs_more_info"
 
+            print(f"[CHECK ENDPOINT] Saving results to DynamoDB (Status: {discrepancy_status})...")
             # Write back to DynamoDB
             update_document_check_results(
                 project_id=project_id,
@@ -72,8 +77,10 @@ class CheckProjectView(APIView):
 
             # Gemini free-tier rate limiting safety (delay 2 seconds between docs, except after the last one)
             if i < len(invoices_to_check) - 1:
+                print(f"[CHECK ENDPOINT] Waiting 2 seconds to respect rate limits...")
                 time.sleep(2)
 
+        print(f"\n=== [CHECK ENDPOINT] Complete. Summary: {summary} ===\n")
         return Response(summary, status=status.HTTP_200_OK)
 
 

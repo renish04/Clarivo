@@ -15,10 +15,14 @@ def get_project_context(project_id, exclude_doc_id, query_text, token_budget=200
     Returns:
         tuple: (context_string, list_of_included_filenames)
     """
+    print(f"\n--- [RETRIEVAL] Fetching context for project {project_id}, excluding doc {exclude_doc_id} ---")
+    
     # 1. Embed query_text
+    print(f"[RETRIEVAL] Generating embedding for query_text (length: {len(query_text)} chars)...")
     query_vector = embed_text(query_text)
     
     # 2. Run hybrid search against Weaviate
+    print(f"[RETRIEVAL] Running Weaviate hybrid search...")
     client = get_weaviate_client()
     try:
         collection = client.collections.get(COLLECTION_NAME)
@@ -26,7 +30,7 @@ def get_project_context(project_id, exclude_doc_id, query_text, token_budget=200
         response = collection.query.hybrid(
             query=query_text,
             vector=query_vector,
-            alpha=0.7, #1.0 is pure semantic, 0.0 is pure keyword!
+            alpha=0.5,  # 0.0 is pure BM25 (keyword), 1.0 is pure semantic, 0.5 is equal weight
             limit=500,  # Generous max limit
             filters=(
                 Filter.by_property("project_id").equal(str(project_id)) &
@@ -35,8 +39,10 @@ def get_project_context(project_id, exclude_doc_id, query_text, token_budget=200
         )
         
         objects = response.objects
+        print(f"[RETRIEVAL] SUCCESS: Weaviate search returned {len(objects)} chunk results.")
     except Exception as e:
         logger.error(f"Weaviate search failed: {e}")
+        print(f"[RETRIEVAL] ERROR: Weaviate search failed: {e}")
         objects = []
     finally:
         client.close()
@@ -54,6 +60,7 @@ def get_project_context(project_id, exclude_doc_id, query_text, token_budget=200
         return doc_filenames[doc_id]
 
     # 4. Walk the ranked results in order, building a labeled context string
+    print(f"[RETRIEVAL] Assembling context blocks (budget: {token_budget} tokens)...")
     context_parts = []
     included_filenames = set()
     current_tokens = 0
@@ -76,7 +83,7 @@ def get_project_context(project_id, exclude_doc_id, query_text, token_budget=200
         approx_tokens = int(words * 1.3)
         
         if current_tokens + approx_tokens > token_budget:
-            # We've reached or are about to exceed the budget, stop adding.
+            print(f"[RETRIEVAL] Token budget reached. Stopping early.")
             break
             
         context_parts.append(block)
@@ -84,5 +91,7 @@ def get_project_context(project_id, exclude_doc_id, query_text, token_budget=200
         current_tokens += approx_tokens
 
     context_string = "".join(context_parts)
+    print(f"[RETRIEVAL] Assembly complete. Included {len(included_filenames)} unique documents: {list(included_filenames)}")
+    print(f"[RETRIEVAL] Total approximate tokens used: {current_tokens}")
+    print(f"--- [RETRIEVAL] Complete ---\n")
     return context_string, list(included_filenames)
-

@@ -28,6 +28,7 @@ def verify_grounding(findings, context_text):
     Checks each evidence claim against the context text.
     Marks evidence['verified'] = True/False.
     """
+    print("\n--- [VERIFY GROUNDING] Starting evidence verification ---")
     norm_context = _normalize_text(context_text)
     
     for finding in findings:
@@ -35,16 +36,20 @@ def verify_grounding(findings, context_text):
         for evidence in evidence_list:
             claim = evidence.get("claim", "")
             if not claim:
+                print(f"[VERIFY GROUNDING] FAILED: Empty claim provided.")
                 evidence["verified"] = False
                 continue
                 
             norm_claim = _normalize_text(claim)
             
             if norm_claim and norm_claim in norm_context:
+                print(f"[VERIFY GROUNDING] PASSED: Claim '{claim}' found in context.")
                 evidence["verified"] = True
             else:
+                print(f"[VERIFY GROUNDING] FAILED: Claim '{claim}' NOT found in context.")
                 evidence["verified"] = False
                 
+    print("--- [VERIFY GROUNDING] Complete ---\n")
     return findings
 
 def fallback_response(filename):
@@ -61,9 +66,11 @@ def detect_discrepancies(project_id, doc_id):
     Fetches the invoice, retrieves related context, and asks Gemini to detect
     any discrepancies (rate, quantity, tax, duplicates).
     """
+    print(f"\n--- [DETECT] Starting discrepancy detection for invoice Doc {doc_id} ---")
     # 1. Fetch main document
     doc_item = get_document(project_id, doc_id)
     if not doc_item:
+        print(f"[DETECT] ERROR: Document {doc_id} for project {project_id} not found.")
         logger.error(f"Document {doc_id} for project {project_id} not found.")
         return fallback_response(doc_id)
     
@@ -71,10 +78,12 @@ def detect_discrepancies(project_id, doc_id):
     filename = doc_item.get("filename", "Unknown")
     
     if not body:
+        print(f"[DETECT] WARNING: Document {doc_id} has no body.")
         logger.warning(f"Document {doc_id} has no body.")
         return fallback_response(filename)
 
     # 2. Retrieve related context
+    print(f"[DETECT] Fetching related context for {filename}...")
     context_str, included_filenames = get_project_context(
         project_id=project_id,
         exclude_doc_id=doc_id,
@@ -92,8 +101,9 @@ def detect_discrepancies(project_id, doc_id):
     # 4. Call Gemini
     raw_text = ""
     try:
+        print(f"[DETECT] Calling Gemini (gemini-3.8-flash) to analyze {filename}...")
         response = gemini_client.models.generate_content(
-            model='gemini-3.6-flash',
+            model='gemini-3.8-flash',
             contents=user_message,
             config=types.GenerateContentConfig(
                 system_instruction=DETECTION_SYSTEM_PROMPT,
@@ -102,6 +112,7 @@ def detect_discrepancies(project_id, doc_id):
         )
         
         raw_text = response.text.strip() if response.text else ""
+        print(f"[DETECT] Gemini raw response received:\n{raw_text}\n")
         
         # Defensive: Strip markdown fences if present
         if raw_text.startswith("```"):
@@ -114,20 +125,24 @@ def detect_discrepancies(project_id, doc_id):
             
         # Parse JSON
         result_dict = json.loads(raw_text)
+        print(f"[DETECT] SUCCESS: Parsed JSON response successfully.")
         
         # Verify grounding against the user_message which contains both the invoice and the context
         if "findings" in result_dict:
             result_dict["findings"] = verify_grounding(result_dict["findings"], user_message)
             
+        print(f"--- [DETECT] Complete for {filename} ---")
         return result_dict
         
     except json.JSONDecodeError as e:
+        print(f"[DETECT] ERROR: Failed to parse Gemini response as JSON. {e}")
         logger.error(
             f"Failed to parse Gemini response as JSON for doc {doc_id}. Error: {e}\n"
             f"Raw response:\n{raw_text}"
         )
         return fallback_response(filename)
     except Exception as e:
+        print(f"[DETECT] ERROR: Gemini API error: {e}")
         logger.exception(f"Gemini API error during detection for doc {doc_id}: {e}")
         return fallback_response(filename)
 
