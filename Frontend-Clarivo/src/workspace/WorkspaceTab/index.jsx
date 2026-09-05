@@ -8,21 +8,26 @@ export default function WorkspaceTab() {
   const { id } = useParams();
   const [isChecking, setIsChecking] = useState(false);
   const [tableMarkdown, setTableMarkdown] = useState('');
+  const [documents, setDocuments] = useState([]);
   const [summary, setSummary] = useState(null);
   const [error, setError] = useState(null);
 
-  const fetchTable = async () => {
+  const fetchData = async () => {
     try {
-      const response = await apiClient.get(`/projects/${id}/discrepancy-table/`);
-      setTableMarkdown(response.data.markdown || '');
+      const [tableRes, docsRes] = await Promise.all([
+        apiClient.get(`/projects/${id}/discrepancy-table/`),
+        apiClient.get(`/projects/${id}/documents/`)
+      ]);
+      setTableMarkdown(tableRes.data.markdown || '');
+      setDocuments(docsRes.data || []);
     } catch (err) {
-      console.error("Failed to fetch table", err);
+      console.error("Failed to fetch data", err);
     }
   };
 
   useEffect(() => {
     if (id) {
-      fetchTable();
+      fetchData();
     }
   }, [id]);
 
@@ -33,8 +38,8 @@ export default function WorkspaceTab() {
     try {
       const response = await apiClient.post(`/projects/${id}/check/`);
       setSummary(response.data);
-      // Once it completes, fetch the updated markdown table
-      await fetchTable();
+      // Once it completes, fetch the updated data
+      await fetchData();
     } catch (err) {
       console.error("Check failed", err);
       setError("Failed to run project check.");
@@ -42,6 +47,13 @@ export default function WorkspaceTab() {
       setIsChecking(false);
     }
   };
+
+  const filenameToUrl = documents.reduce((acc, doc) => ({...acc, [doc.filename]: doc.view_url}), {});
+  const docsWithFindings = documents.filter(doc => 
+    doc.status === "checked" && 
+    ["flagged", "auto_resolved", "needs_more_info"].includes(doc.discrepancy_status) &&
+    doc.findings && doc.findings.length > 0
+  );
 
   return (
     <div className="p-6 space-y-6 max-w-6xl mx-auto">
@@ -102,6 +114,59 @@ export default function WorkspaceTab() {
             <p className="text-sm mt-2">Click "Check Project" to run the detection engine on classified invoices.</p>
           </div>
         )
+      )}
+
+      {/* Findings Details Section */}
+      {docsWithFindings.length > 0 && (
+        <div className="space-y-4 mt-8">
+          <h3 className="text-xl font-bold text-gray-800 border-b pb-2">Detailed Findings</h3>
+          {docsWithFindings.map(doc => (
+            <details key={doc.SK} className="bg-white border border-gray-200 rounded-md shadow-sm group">
+              <summary className="p-4 font-semibold cursor-pointer select-none hover:bg-gray-50 flex items-center justify-between">
+                <span>{doc.filename} <span className="ml-2 text-xs px-2 py-1 bg-gray-200 rounded-full font-normal uppercase tracking-wider">{doc.discrepancy_status.replace('_', ' ')}</span></span>
+                <span className="text-gray-400 group-open:rotate-180 transition-transform">▼</span>
+              </summary>
+              <div className="p-4 border-t border-gray-200 space-y-4">
+                {doc.findings.map((finding, idx) => (
+                  <div key={idx} className="p-4 bg-gray-50 rounded border border-gray-100">
+                    <p className="font-medium text-gray-800 mb-2 capitalize">Issue: {finding.type.replace('_', ' ')}</p>
+                    <p className="text-sm text-gray-700 mb-3">{finding.description}</p>
+                    
+                    {finding.evidence && finding.evidence.length > 0 && (
+                      <div className="space-y-2">
+                        <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Evidence</h4>
+                        <ul className="space-y-2">
+                          {finding.evidence.map((ev, evIdx) => (
+                            <li key={evIdx} className="text-sm flex items-start gap-2 bg-white p-2 rounded border border-gray-200">
+                              <div className="mt-0.5">
+                                {ev.verified === false ? (
+                                  <span title="Warning: AI claim not found exactly in source text" className="text-red-500 text-base leading-none">⚠️</span>
+                                ) : (
+                                  <span title="Verified exactly in source text" className="text-green-500 text-base leading-none">✅</span>
+                                )}
+                              </div>
+                              <div>
+                                <span className="text-gray-800 font-medium">"{ev.claim}"</span>
+                                <span className="text-gray-400 mx-2">—</span>
+                                {filenameToUrl[ev.source_doc] ? (
+                                  <a href={filenameToUrl[ev.source_doc]} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">
+                                    {ev.source_doc}
+                                  </a>
+                                ) : (
+                                  <span className="text-gray-600 italic">{ev.source_doc}</span>
+                                )}
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </details>
+          ))}
+        </div>
       )}
     </div>
   );
