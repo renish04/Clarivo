@@ -18,7 +18,10 @@ in the order or rate agreement?
 was actually delivered? IMPORTANT: check ALL delivery documents for
 this supplier and item before concluding a mismatch — a single
 delivery might be a partial shipment, and multiple deliveries
-together may fully account for the invoiced quantity. Do not flag a
+together may fully account for the invoiced quantity. 
+EXAMPLE: If the invoice is for 100 widgets, and the context contains
+Delivery Note A for 60 widgets and Delivery Note B for 40 widgets,
+these sum to 100. This is a MATCH, not a mismatch. Do not flag a
 quantity mismatch until you have checked whether other deliveries in
 the provided context explain the gap.
 - Tax error: is the tax charged consistent with a reasonable
