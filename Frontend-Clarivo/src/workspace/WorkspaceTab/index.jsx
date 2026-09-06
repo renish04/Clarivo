@@ -84,7 +84,7 @@ export default function WorkspaceTab() {
             >
               Detailed Findings
               {docsWithFindings.length > 0 && (
-                <span className="ml-2 inline-flex items-center justify-center px-2 py-0.5 text-xs font-bold leading-none text-white bg-indigo-600 rounded-full">
+                <span className="ml-2 inline-flex items-center justify-center px-2 py-0.5 text-xs font-bold leading-none text-white bg-blue-800 rounded-full">
                   {docsWithFindings.length}
                 </span>
               )}
@@ -95,7 +95,7 @@ export default function WorkspaceTab() {
         <button 
           onClick={handleCheckProject} 
           disabled={isChecking}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white font-medium px-4 py-2 rounded shadow-sm disabled:opacity-50 transition-colors"
+          className="bg-blue-800 hover:bg-blue-900 text-white font-medium px-4 py-2 rounded shadow-sm disabled:opacity-50 transition-colors"
         >
           {isChecking ? "Checking..." : "Check Project"}
         </button>
@@ -127,7 +127,7 @@ export default function WorkspaceTab() {
               <div className="flex-shrink-0 flex gap-6 p-4 bg-white border border-gray-200 rounded-md shadow-sm text-sm">
                 <div><span className="font-bold text-green-700">Clean:</span> {summary.clean}</div>
                 <div><span className="font-bold text-red-700">Flagged:</span> {summary.flagged}</div>
-                <div><span className="font-bold text-blue-700">Auto Resolved:</span> {summary.auto_resolved}</div>
+                <div><span className="font-bold text-blue-900">Auto Resolved:</span> {summary.auto_resolved}</div>
                 <div><span className="font-bold text-gray-700">Needs Info:</span> {summary.needs_more_info}</div>
               </div>
             )}
@@ -194,7 +194,7 @@ export default function WorkspaceTab() {
                                       <span className="text-gray-800 font-medium">"{ev.claim}"</span>
                                       <span className="text-gray-400 mx-2">—</span>
                                       {filenameToUrl[ev.source_doc] ? (
-                                        <a href={filenameToUrl[ev.source_doc]} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">
+                                        <a href={filenameToUrl[ev.source_doc]} target="_blank" rel="noopener noreferrer" className="text-blue-800 hover:underline">
                                           {ev.source_doc}
                                         </a>
                                       ) : (

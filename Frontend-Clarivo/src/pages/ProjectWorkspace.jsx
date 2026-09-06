@@ -11,7 +11,7 @@ export default function ProjectWorkspace() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   
-  // Tab state: 'files' | 'workspace' | 'chat'
+  // Tab state: 'files' | 'workspace' | 'AI chat'
   const [activeTab, setActiveTab] = useState('files');
 
   useEffect(() => {
@@ -39,7 +39,7 @@ export default function ProjectWorkspace() {
     return (
       <div className="h-full flex flex-col items-center justify-center">
         <div className="text-red-500 mb-4">{error}</div>
-        <Link to="/projects" className="text-blue-600 hover:underline">
+        <Link to="/projects" className="text-blue-800 hover:underline">
           Select another project
         </Link>
       </div>
@@ -49,12 +49,17 @@ export default function ProjectWorkspace() {
   return (
     <div className="h-full flex flex-col bg-white w-full">
       {/* Header */}
-      <div className="px-8 pt-6 pb-2 border-b border-gray-200 flex-shrink-0 bg-white">
-        <h1 className="text-2xl font-bold text-gray-900 mb-4">{project.name}</h1>
+      <div className="px-8 pt-6 pb-2 border-b border-gray-200 flex-shrink-0 bg-white relative">
+        <div className="flex justify-between items-start">
+          <h1 className="text-2xl font-bold text-gray-900 mb-4">{project.name}</h1>
+          <Link to="/projects" className="text-sm font-medium text-gray-500 hover:text-gray-900 transition-colors mt-1">
+            Back &larr;
+          </Link>
+        </div>
         
         {/* Tabs */}
         <nav className="-mb-px flex space-x-8" aria-label="Tabs">
-          {['files', 'workspace', 'chat'].map((tab) => (
+          {['files', 'workspace', 'AI chat'].map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -62,7 +67,7 @@ export default function ProjectWorkspace() {
                 whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm capitalize transition-colors
                 ${
                   activeTab === tab
-                    ? 'border-blue-600 text-blue-600'
+                    ? 'border-blue-800 text-blue-800'
                     : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
                 }
               `}
@@ -77,7 +82,7 @@ export default function ProjectWorkspace() {
       <div className="flex-1 overflow-hidden relative bg-white">
         {activeTab === 'files' && <FilesTab />}
         {activeTab === 'workspace' && <WorkspaceTab />}
-        {activeTab === 'chat' && <ChatPanel />}
+        {activeTab === 'AI chat' && <ChatPanel />}
       </div>
     </div>
   );

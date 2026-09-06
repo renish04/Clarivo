@@ -85,7 +85,7 @@ export default function ProjectsLayout() {
                 value={newProjectName}
                 onChange={(e) => setNewProjectName(e.target.value)}
                 placeholder="Project Name..."
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-800"
                 autoFocus
               />
               <div className="flex gap-2">
@@ -102,7 +102,7 @@ export default function ProjectsLayout() {
                 <button
                   type="submit"
                   disabled={!newProjectName.trim()}
-                  className="flex-1 py-1.5 px-2 bg-blue-600 text-white rounded text-xs font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
+                  className="flex-1 py-1.5 px-2 bg-blue-800 text-white rounded text-xs font-medium hover:bg-blue-900 transition-colors disabled:opacity-50"
                 >
                   Create
                 </button>

@@ -32,7 +32,7 @@ export default function ProjectHome() {
     <div className="flex-1 flex items-center justify-center p-8 h-full bg-white">
       <div className="max-w-2xl w-full text-center">
         <div className="mb-8">
-          <div className="w-20 h-20 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-blue-100">
+          <div className="w-20 h-20 bg-blue-50 text-blue-800 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-blue-100">
             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
               <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
@@ -53,14 +53,14 @@ export default function ProjectHome() {
               value={newProjectName}
               onChange={(e) => setNewProjectName(e.target.value)}
               placeholder="e.g. Q3 Vendor Invoices"
-              className="flex-1 px-4 py-3 border border-gray-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-600 shadow-sm transition-shadow"
+              className="flex-1 px-4 py-3 border border-gray-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-800 shadow-sm transition-shadow"
               disabled={isCreating}
               autoFocus
             />
             <button
               type="submit"
               disabled={!newProjectName.trim() || isCreating}
-              className="px-6 py-3 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-600 transition-colors disabled:opacity-50 shadow-sm flex items-center justify-center min-w-[120px]"
+              className="px-6 py-3 bg-blue-800 text-white font-medium rounded-lg hover:bg-blue-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-800 transition-colors disabled:opacity-50 shadow-sm flex items-center justify-center min-w-[120px]"
             >
               {isCreating ? 'Creating...' : 'Create Project'}
             </button>

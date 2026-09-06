@@ -19,7 +19,7 @@ export default function Landing() {
               </Link>
               <Link
                 to="/login"
-                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors"
+                className="bg-blue-800 hover:bg-blue-900 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors"
               >
                 Get Started
               </Link>
@@ -33,7 +33,7 @@ export default function Landing() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 text-center">
           <h1 className="text-5xl md:text-6xl font-extrabold text-gray-900 tracking-tight mb-6">
             Simplify your document <br className="hidden md:block" />
-            <span className="text-blue-600">analysis and retrieval.</span>
+            <span className="text-blue-800">analysis and retrieval.</span>
           </h1>
           <p className="mt-4 max-w-2xl text-xl text-gray-500 mx-auto mb-10">
             Clarivo is the enterprise solution for managing, searching, and analyzing your documents with intelligent insights.
@@ -41,7 +41,7 @@ export default function Landing() {
           <div className="flex justify-center gap-4">
             <Link
               to="/login"
-              className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-lg text-lg font-medium transition-colors shadow-sm"
+              className="bg-blue-800 hover:bg-blue-900 text-white px-8 py-3 rounded-lg text-lg font-medium transition-colors shadow-sm"
             >
               Start for free
             </Link>
