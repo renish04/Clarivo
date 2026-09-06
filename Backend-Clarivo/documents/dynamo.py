@@ -140,3 +140,21 @@ def update_document_check_results(project_id, doc_id, discrepancy_status, findin
         ReturnValues="ALL_NEW",
     )
     return response.get("Attributes")
+
+def reset_document_check_results(project_id, doc_id):
+    """
+    Reset a checked document back to classified, removing previous check results.
+    """
+    response = _table.update_item(
+        Key={
+            "PK": f"PROJECT#{project_id}",
+            "SK": f"DOC#{doc_id}",
+        },
+        UpdateExpression="SET #s = :status REMOVE discrepancy_status, findings, resolution, table_row_markdown",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={
+            ":status": "classified"
+        },
+        ReturnValues="ALL_NEW",
+    )
+    return response.get("Attributes")

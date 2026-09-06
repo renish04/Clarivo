@@ -1,7 +1,7 @@
 import os
 from google import genai
 from google.genai import types
-from documents.dynamo import get_document, update_document_classification
+from documents.dynamo import get_document, update_document_classification, list_documents, reset_document_check_results
 
 # Initialize the Gemini client. It will automatically pick up GEMINI_API_KEY from the environment.
 gemini_client = genai.Client()
@@ -66,6 +66,21 @@ def classify_document(project_id, doc_id):
         
     print(f"[CLASSIFY] Updating DynamoDB with doc_type='{result_text}' and status='classified'")
     update_document_classification(project_id, doc_id, result_text, "classified")
+    
+    if result_text in ("order", "delivery", "governing"):
+        supplier = doc_item.get("supplier")
+        if supplier:
+            supplier_lower = supplier.strip().lower()
+            all_docs = list_documents(project_id)
+            for doc in all_docs:
+                if (doc.get("doc_type") == "invoice" and 
+                    doc.get("status") == "checked" and 
+                    doc.get("supplier", "").strip().lower() == supplier_lower):
+                    
+                    target_doc_id = doc.get("SK", "").replace("DOC#", "")
+                    print(f"[CLASSIFY] Resetting invoice {target_doc_id} back to 'classified' due to new evidence from {supplier}")
+                    reset_document_check_results(project_id, target_doc_id)
+
     print(f"--- [CLASSIFY] Complete ---")
     return result_text
 
