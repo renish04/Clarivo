@@ -32,11 +32,11 @@ export default function Landing() {
       <main className="flex-grow flex items-center justify-center animate-slide-up">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 text-center">
           <h1 className="text-5xl md:text-6xl font-extrabold text-gray-900 tracking-tight mb-6">
-            Simplify your document <br className="hidden md:block" />
-            <span className="text-blue-800">analysis and retrieval.</span>
+            Commercial Accounts Payable, <br className="hidden md:block" />
+            <span className="text-blue-800">now fully automated with AI.</span>
           </h1>
           <p className="mt-4 max-w-2xl text-xl text-gray-500 mx-auto mb-10">
-            Clarivo is the enterprise solution for managing, searching, and analyzing your documents with intelligent insights.
+            Clarivo detects, investigates, and resolves invoice discrepancies against full project context without human intervention.
           </p>
           <div className="flex justify-center gap-4">
             <Link

@@ -48,10 +48,10 @@ export default function Login() {
         </div>
         <div className="max-w-md">
           <h2 className="text-3xl font-bold text-gray-900 mb-6">
-            Unlock the power of your documents.
+            Detect and resolve AP discrepancies autonomously.
           </h2>
           <p className="text-lg text-gray-600 mb-8">
-            Clarivo provides intelligent search and analytics to help your team find exactly what they need, exactly when they need it.
+            Clarivo empowers finance teams by catching invoice errors and instantly resolving them against your complete procurement records—no human intervention required.
           </p>
           <div className="flex items-center gap-4">
             <div className="flex -space-x-2">
