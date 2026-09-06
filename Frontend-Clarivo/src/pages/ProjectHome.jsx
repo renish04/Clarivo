@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate, useOutletContext } from 'react-router-dom';
 import client from '../api/client';
+import clarivoIcon from '../assets/clarivo-icon-only.png';
 
 export default function ProjectHome() {
   const [newProjectName, setNewProjectName] = useState('');
@@ -32,11 +33,8 @@ export default function ProjectHome() {
     <div className="flex-1 flex items-center justify-center p-8 h-full bg-white">
       <div className="max-w-2xl w-full text-center">
         <div className="mb-8">
-          <div className="w-20 h-20 bg-blue-50 text-blue-800 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-blue-100">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
-              <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
-            </svg>
+          <div className="w-20 h-20 bg-white rounded-2xl flex items-center justify-center mx-auto mb-6">
+            <img src={clarivoIcon} alt="Clarivo Icon" className="w-12 h-12 object-contain" />
           </div>
           <h1 className="text-4xl font-extrabold text-gray-900 tracking-tight mb-4">
             Create Your Personalized <br /> Procurement Project
