@@ -4,6 +4,15 @@ import apiClient from '../../api/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
+const getStatusBadgeClass = (status) => {
+  const s = status?.toLowerCase() || '';
+  if (s === 'clean') return 'bg-green-100 text-green-800 border-green-200';
+  if (s === 'auto_resolved') return 'bg-teal-100 text-teal-800 border-teal-200';
+  if (s === 'flagged') return 'bg-red-100 text-red-800 border-red-200';
+  if (s === 'needs_more_info') return 'bg-purple-100 text-purple-800 border-purple-200';
+  return 'bg-gray-100 text-gray-800 border-gray-200';
+};
+
 export default function WorkspaceTab() {
   const { id } = useParams();
   const [isChecking, setIsChecking] = useState(false);
@@ -12,7 +21,7 @@ export default function WorkspaceTab() {
   const [summary, setSummary] = useState(null);
   const [error, setError] = useState(null);
 
-  const [activeSubTab, setActiveSubTab] = useState('overview'); // 'overview' | 'details'
+  const [activeSubTab, setActiveSubTab] = useState('overview');
 
   const fetchData = async () => {
     try {
@@ -21,6 +30,9 @@ export default function WorkspaceTab() {
         apiClient.get(`/projects/${id}/documents/`)
       ]);
       setTableMarkdown(tableRes.data.markdown || '');
+      if (tableRes.data.summary) {
+        setSummary(tableRes.data.summary);
+      }
       setDocuments(docsRes.data || []);
     } catch (err) {
       console.error("Failed to fetch data", err);
@@ -36,7 +48,6 @@ export default function WorkspaceTab() {
   const handleCheckProject = async () => {
     setIsChecking(true);
     setError(null);
-    setSummary(null);
     try {
       const response = await apiClient.post(`/projects/${id}/check/`);
       setSummary(response.data);
@@ -53,12 +64,11 @@ export default function WorkspaceTab() {
   const docsWithFindings = documents.filter(doc => 
     doc.status === "checked" && 
     ["flagged", "auto_resolved", "needs_more_info"].includes(doc.discrepancy_status) &&
-    doc.findings && doc.findings.length > 0
+    ((doc.findings && doc.findings.length > 0) || doc.resolution)
   );
 
   return (
     <div className="h-full flex flex-col p-8 bg-gray-50/50 overflow-hidden">
-      {/* Header with Sub-tabs */}
       <div className="flex items-center justify-between flex-shrink-0 mb-6">
         <div className="flex items-center gap-6">
           <h2 className="text-2xl font-bold text-gray-800">Project Discrepancies</h2>
@@ -101,8 +111,24 @@ export default function WorkspaceTab() {
         </button>
       </div>
 
-      {/* Top Status Alerts */}
       <div className="flex-shrink-0 space-y-4 mb-6">
+        {summary && (
+          <div className="flex items-center gap-8 p-6 bg-white border border-gray-200 rounded-lg shadow-sm">
+            <div className="flex flex-col items-center pr-8 border-r border-gray-200">
+              <span className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-1">Touchless Rate</span>
+              <span className="text-4xl font-bold text-blue-900">
+                {summary.touchless_rate !== null && summary.touchless_rate !== undefined ? `${summary.touchless_rate}%` : '--'}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-6 text-sm">
+              <div className="flex flex-col"><span className="font-bold text-green-700">Clean</span> <span>{summary.clean}</span></div>
+              <div className="flex flex-col"><span className="font-bold text-teal-700">Auto Resolved</span> <span>{summary.auto_resolved}</span></div>
+              <div className="flex flex-col"><span className="font-bold text-red-700">Flagged</span> <span>{summary.flagged}</span></div>
+              <div className="flex flex-col"><span className="font-bold text-gray-700">Needs Info</span> <span>{summary.needs_more_info}</span></div>
+            </div>
+          </div>
+        )}
+
         {isChecking && (
           <div className="p-4 bg-yellow-50 text-yellow-800 rounded-md border border-yellow-200 shadow-sm animate-pulse">
             <p className="font-medium">Checking documents... this may take a minute.</p>
@@ -117,21 +143,10 @@ export default function WorkspaceTab() {
         )}
       </div>
 
-      {/* Tab Content Area */}
       <div className="flex-1 flex flex-col min-h-0">
         
-        {/* OVERVIEW TAB */}
         {activeSubTab === 'overview' && (
           <div className="flex-1 flex flex-col min-h-0 gap-6">
-            {summary && (
-              <div className="flex-shrink-0 flex gap-6 p-4 bg-white border border-gray-200 rounded-md shadow-sm text-sm">
-                <div><span className="font-bold text-green-700">Clean:</span> {summary.clean}</div>
-                <div><span className="font-bold text-red-700">Flagged:</span> {summary.flagged}</div>
-                <div><span className="font-bold text-blue-900">Auto Resolved:</span> {summary.auto_resolved}</div>
-                <div><span className="font-bold text-gray-700">Needs Info:</span> {summary.needs_more_info}</div>
-              </div>
-            )}
-
             {tableMarkdown ? (
               <div className="flex-1 flex flex-col min-h-0">
                 <div className="bg-white rounded-md shadow-sm border border-gray-200 overflow-y-auto custom-scrollbar flex-1">
@@ -141,7 +156,22 @@ export default function WorkspaceTab() {
                       table: ({node, ...props}) => <table className="w-full text-left text-sm border-collapse" {...props} />,
                       thead: ({node, ...props}) => <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10" {...props} />,
                       th: ({node, ...props}) => <th className="px-4 py-3 font-semibold text-gray-700 border-b border-gray-200" {...props} />,
-                      td: ({node, ...props}) => <td className="px-4 py-3 border-b border-gray-100 align-top text-gray-800" {...props} />,
+                      td: ({node, ...props}) => {
+                        const content = (props.children && props.children[0]) ? String(props.children[0]).trim() : '';
+                        const lower = content.toLowerCase();
+                        const knownStatuses = ['clean', 'auto_resolved', 'flagged', 'needs_more_info'];
+                        
+                        if (knownStatuses.includes(lower)) {
+                          return (
+                            <td className="px-4 py-3 border-b border-gray-100 align-top">
+                              <span className={`px-2 py-1 border rounded-full text-xs font-semibold uppercase tracking-wider whitespace-nowrap ${getStatusBadgeClass(lower)}`}>
+                                {content.replace('_', ' ')}
+                              </span>
+                            </td>
+                          );
+                        }
+                        return <td className="px-4 py-3 border-b border-gray-100 align-top text-gray-800" {...props} />;
+                      },
                       tr: ({node, ...props}) => <tr className="hover:bg-gray-50 transition-colors" {...props} />
                     }}
                   >
@@ -160,7 +190,6 @@ export default function WorkspaceTab() {
           </div>
         )}
 
-        {/* DETAILED FINDINGS TAB */}
         {activeSubTab === 'details' && (
           <div className="flex-1 flex flex-col min-h-0">
             {docsWithFindings.length > 0 ? (
@@ -168,21 +197,33 @@ export default function WorkspaceTab() {
                 {docsWithFindings.map(doc => (
                   <details key={doc.SK} className="bg-white border border-gray-200 rounded-md shadow-sm group">
                     <summary className="p-4 font-semibold cursor-pointer select-none hover:bg-gray-50 flex items-center justify-between">
-                      <span>{doc.filename} <span className="ml-2 text-xs px-2 py-1 bg-gray-200 rounded-full font-normal uppercase tracking-wider">{doc.discrepancy_status.replace('_', ' ')}</span></span>
+                      <span>
+                        {doc.filename} 
+                        <span className={`ml-3 text-xs px-2.5 py-1 border rounded-full font-bold uppercase tracking-wider ${getStatusBadgeClass(doc.discrepancy_status)}`}>
+                          {doc.discrepancy_status.replace('_', ' ')}
+                        </span>
+                      </span>
                       <span className="text-gray-400 group-open:rotate-180 transition-transform">▼</span>
                     </summary>
                     <div className="p-4 border-t border-gray-200 space-y-4">
-                      {doc.findings.map((finding, idx) => (
-                        <div key={idx} className="p-4 bg-gray-50 rounded border border-gray-100">
-                          <p className="font-medium text-gray-800 mb-2 capitalize">Issue: {finding.type.replace('_', ' ')}</p>
+                      {doc.resolution && (
+                        <div className="p-4 bg-teal-50 rounded border border-teal-200">
+                          <h4 className="text-sm font-bold text-teal-800 uppercase tracking-wider mb-1">Auto Resolution</h4>
+                          <p className="text-sm text-teal-900">{doc.resolution}</p>
+                        </div>
+                      )}
+
+                      {doc.findings && doc.findings.map((finding, idx) => (
+                        <div key={idx} className="p-4 bg-gray-50 rounded border border-gray-200">
+                          <p className="font-bold text-gray-800 mb-2 capitalize">Issue: {finding.type.replace('_', ' ')}</p>
                           <p className="text-sm text-gray-700 mb-3">{finding.description}</p>
                           
                           {finding.evidence && finding.evidence.length > 0 && (
-                            <div className="space-y-2">
-                              <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Evidence</h4>
+                            <div className="space-y-2 mt-3">
+                              <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Evidence</h4>
                               <ul className="space-y-2">
                                 {finding.evidence.map((ev, evIdx) => (
-                                  <li key={evIdx} className="text-sm flex items-start gap-2 bg-white p-2 rounded border border-gray-200">
+                                  <li key={evIdx} className="text-sm flex items-start gap-2 bg-white p-2 rounded border border-gray-200 shadow-sm">
                                     <div className="mt-0.5">
                                       {ev.verified === false ? (
                                         <span title="Warning: AI claim not found exactly in source text" className="text-red-500 text-base leading-none">⚠️</span>
@@ -194,7 +235,7 @@ export default function WorkspaceTab() {
                                       <span className="text-gray-800 font-medium">"{ev.claim}"</span>
                                       <span className="text-gray-400 mx-2">—</span>
                                       {filenameToUrl[ev.source_doc] ? (
-                                        <a href={filenameToUrl[ev.source_doc]} target="_blank" rel="noopener noreferrer" className="text-blue-800 hover:underline">
+                                        <a href={filenameToUrl[ev.source_doc]} target="_blank" rel="noopener noreferrer" className="text-blue-700 hover:underline font-medium">
                                           {ev.source_doc}
                                         </a>
                                       ) : (
@@ -224,3 +265,4 @@ export default function WorkspaceTab() {
     </div>
   );
 }
+
