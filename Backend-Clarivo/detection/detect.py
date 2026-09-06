@@ -103,7 +103,7 @@ def detect_discrepancies(project_id, doc_id):
     try:
         print(f"[DETECT] Calling Gemini (gemini-3.6-flash) to analyze {filename}...")
         response = gemini_client.models.generate_content(
-            model='gemini-3.6-flash',
+            model='gemini-3.7-flash',
             contents=user_message,
             config=types.GenerateContentConfig(
                 system_instruction=DETECTION_SYSTEM_PROMPT,
