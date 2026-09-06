@@ -33,23 +33,31 @@ def classify_document(project_id, doc_id):
         "4. governing: A document that sets baseline terms rather than recording a specific transaction "
         "(e.g., rate agreement, contract, bill of quantities).\n"
         "5. other: Any document that does not cleanly fit into the above categories.\n\n"
-        "Your response must be a single word, strictly one of: 'invoice', 'order', 'delivery', 'governing', or 'other'. "
-        "Do not include any punctuation, explanation, or additional text. Detect the core intent of the document."
+        "You must also extract the name of the supplier/vendor issuing or associated with the document, if clearly stated.\n\n"
+        "Return a JSON object strictly matching this format:\n"
+        '{\n  "doc_type": "invoice|order|delivery|governing|other",\n  "supplier": "Name of supplier, or null if not found"\n}\n'
+        "Do not include any other text or markdown fences."
     )
     
     try:
-        print(f"[CLASSIFY] Calling Gemini (gemini-3.6-flash) for intent classification...")
+        print(f"[CLASSIFY] Calling Gemini (gemini-3.7-flash) for intent classification...")
         response = gemini_client.models.generate_content(
             model='gemini-3.7-flash',
             contents=body,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
                 temperature=0.2,
+                response_mime_type="application/json"
             )
         )
         
+        import json
         print(f"[CLASSIFY] Gemini raw response: '{response.text.strip()}'")
-        result_text = response.text.strip().lower()
+        parsed = json.loads(response.text.strip())
+        
+        result_text = parsed.get("doc_type", "other").lower()
+        supplier_name = parsed.get("supplier")
+        
         # Clean up any trailing punctuation just in case
         result_text = ''.join(c for c in result_text if c.isalnum())
         
@@ -58,17 +66,18 @@ def classify_document(project_id, doc_id):
             print(f"[CLASSIFY] WARNING: Response '{result_text}' not in allowed types. Defaulting to 'other'.")
             result_text = "other"
         else:
-            print(f"[CLASSIFY] SUCCESS: Parsed type as '{result_text}'.")
+            print(f"[CLASSIFY] SUCCESS: Parsed type as '{result_text}', supplier as '{supplier_name}'.")
             
     except Exception as e:
         print(f"[CLASSIFY] ERROR: Gemini API error during classification: {e}")
         result_text = "other"
+        supplier_name = None
         
-    print(f"[CLASSIFY] Updating DynamoDB with doc_type='{result_text}' and status='classified'")
-    update_document_classification(project_id, doc_id, result_text, "classified")
+    print(f"[CLASSIFY] Updating DynamoDB with doc_type='{result_text}', supplier='{supplier_name}' and status='classified'")
+    update_document_classification(project_id, doc_id, result_text, "classified", supplier_name)
     
     if result_text in ("order", "delivery", "governing"):
-        supplier = doc_item.get("supplier")
+        supplier = supplier_name
         if supplier:
             supplier_lower = supplier.strip().lower()
             all_docs = list_documents(project_id)

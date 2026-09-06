@@ -100,20 +100,27 @@ def update_document_status(project_id, doc_id, new_status):
     return response.get("Attributes")
 
 
-def update_document_classification(project_id, doc_id, doc_type, new_status):
+def update_document_classification(project_id, doc_id, doc_type, new_status, supplier=None):
     """
-    Set the doc_type and status attributes on an existing document record.
+    Set the doc_type, status, and optionally supplier attributes on an existing document record.
 
     Returns the full updated item dict.
     """
+    if supplier:
+        update_expr = "SET #t = :doc_type, #s = :status, supplier = :supplier"
+        expr_vals = {":doc_type": doc_type, ":status": new_status, ":supplier": supplier}
+    else:
+        update_expr = "SET #t = :doc_type, #s = :status"
+        expr_vals = {":doc_type": doc_type, ":status": new_status}
+
     response = _table.update_item(
         Key={
             "PK": f"PROJECT#{project_id}",
             "SK": f"DOC#{doc_id}",
         },
-        UpdateExpression="SET #t = :doc_type, #s = :status",
+        UpdateExpression=update_expr,
         ExpressionAttributeNames={"#t": "doc_type", "#s": "status"},
-        ExpressionAttributeValues={":doc_type": doc_type, ":status": new_status},
+        ExpressionAttributeValues=expr_vals,
         ReturnValues="ALL_NEW",
     )
     return response.get("Attributes")
