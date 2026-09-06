@@ -114,17 +114,20 @@ export default function WorkspaceTab() {
       <div className="flex-shrink-0 space-y-4 mb-6">
         {summary && (
           <div className="flex items-center gap-8 p-6 bg-white border border-gray-200 rounded-lg shadow-sm">
-            <div className="flex flex-col items-center pr-8 border-r border-gray-200">
-              <span className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-1">Touchless Rate</span>
+            <div className="flex flex-col items-start pr-8 border-r border-gray-200">
               <span className="text-4xl font-bold text-blue-900">
                 {summary.touchless_rate !== null && summary.touchless_rate !== undefined ? `${summary.touchless_rate}%` : '--'}
               </span>
+              <span className="text-sm font-medium text-gray-500 mt-1">resolved without human review</span>
             </div>
-            <div className="flex flex-wrap gap-6 text-sm">
-              <div className="flex flex-col"><span className="font-bold text-green-700">Clean</span> <span>{summary.clean}</span></div>
-              <div className="flex flex-col"><span className="font-bold text-teal-700">Auto Resolved</span> <span>{summary.auto_resolved}</span></div>
-              <div className="flex flex-col"><span className="font-bold text-red-700">Flagged</span> <span>{summary.flagged}</span></div>
-              <div className="flex flex-col"><span className="font-bold text-gray-700">Needs Info</span> <span>{summary.needs_more_info}</span></div>
+            <div className="flex flex-wrap items-center gap-4 text-sm font-medium text-gray-600">
+              <span className="text-green-700">{summary.clean} clean</span>
+              <span>&middot;</span>
+              <span className="text-teal-700">{summary.auto_resolved} auto-resolved</span>
+              <span>&middot;</span>
+              <span className="text-red-700">{summary.flagged} flagged</span>
+              <span>&middot;</span>
+              <span className="text-purple-700">{summary.needs_more_info} needs review</span>
             </div>
           </div>
         )}
