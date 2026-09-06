@@ -6,7 +6,7 @@ export default function Landing() {
   return (
     <div className="min-h-screen bg-white flex flex-col">
       {/* Navigation */}
-      <nav className="border-b border-gray-100">
+      <nav className="border-b border-gray-100 animate-slide-down">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16 items-center">
             <Logo />
@@ -29,7 +29,7 @@ export default function Landing() {
       </nav>
 
       {/* Hero Section */}
-      <main className="flex-grow flex items-center justify-center">
+      <main className="flex-grow flex items-center justify-center animate-slide-up">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 text-center">
           <h1 className="text-5xl md:text-6xl font-extrabold text-gray-900 tracking-tight mb-6">
             Simplify your document <br className="hidden md:block" />
@@ -56,7 +56,7 @@ export default function Landing() {
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-gray-100 py-8">
+      <footer className="border-t border-gray-100 py-8 animate-slide-up">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center text-gray-400 text-sm">
           &copy; {new Date().getFullYear()} Clarivo Inc. All rights reserved.
         </div>
