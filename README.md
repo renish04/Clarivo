@@ -29,7 +29,8 @@ Where a case resolves itself — for example, two partial deliveries that togeth
 
 ## Key Features
 
-- **Multi-format ingestion** — PDF and scanned/photographed image uploads into a per-project workspace
+- **Multi-format ingestion** — PDF and scanned/photographed image uploads into a per-project workspace, one file at a time, as a multi-file selection, or as an entire folder ingested recursively through every nested subdirectory
+- **Hands-off ingestion pipeline** — a single upload carries itself from S3 through extraction, indexing, and classification without any further interaction; the browser watches progress rather than driving it
 - **Dual extraction pipeline** — direct text extraction for digital PDFs, Tesseract OCR for photographed documents, unified into one downstream representation
 - **Automatic document classification** — every document is tagged (invoice / order / delivery / governing / other) without user input, determining what gets actively checked versus what serves as reference context
 - **Semantic project indexing** — every document is chunked and embedded into a per-project vector index, queryable by hybrid (keyword + vector) search
@@ -43,24 +44,38 @@ Where a case resolves itself — for example, two partial deliveries that togeth
 
 ```mermaid
 flowchart TD
-    A[User uploads document] --> B[(S3: raw file storage)]
+    A[User uploads files\nor a whole folder] --> B[(S3: raw file storage)]
+    A --> Q[Upload confirmed:\ndocument queued]
     B --> C{Lambda: extraction}
     C -->|PDF| D[Direct text extraction]
     C -->|JPG| E[Tesseract OCR]
     D --> F[(DynamoDB: document record)]
     E --> F
-    F --> G[Auto-classification\ninvoice / order / delivery / governing]
-    G --> H[Chunking + embedding]
-    H --> I[(Weaviate: project vector index)]
-    G -->|if invoice| J[Hybrid retrieval\nfull project context]
+
+    Q --> W1
+
+    subgraph W [Backend ingestion worker — one document at a time]
+        direction TB
+        W1[Wait for extraction] --> W2[Chunking + embedding]
+        W2 --> W3[Auto-classification\ninvoice / order / delivery / governing]
+    end
+
+    F -.->|status polled| W1
+    W2 --> I[(Weaviate: project vector index)]
+    W3 --> P[Files tab:\nlive per-document status]
+
+    W3 --> R[Classified — ready to check]
+    R -->|Check Project| J[Hybrid retrieval\nfull project context]
     I --> J
     J --> K[Gemini: full-context\ndiscrepancy reasoning]
     K --> L[Grounding verification]
     L --> M[(Result stored on document)]
     M --> N[Workspace tab:\ndiscrepancy table]
-    G -->|new order/delivery/governing doc| O[Re-open matching\nchecked invoices]
+    W3 -->|new order/delivery/governing doc| O[Re-open matching\nchecked invoices]
     O --> J
 ```
+
+Ingestion is owned by the backend, not the browser. Confirming an upload queues the document on a single background worker that waits for extraction to land, then indexes and classifies it — so a document finishes its journey whether or not the tab that uploaded it is still open. The frontend polls only to display progress, and stops once every document has settled. Because the worker processes one document at a time, a folder of fifty files queues up behind itself rather than firing fifty simultaneous model calls.
 
 New evidence doesn't just sit in the index — classifying an order, delivery, or governing document as such automatically re-opens any already-checked invoice it might be relevant to, so a case resolved yesterday can genuinely change today.
 
@@ -89,7 +104,7 @@ Clarivo/
 │   ├── clarivo_backend/        # Django project settings
 │   ├── accounts/                # Authentication
 │   ├── projects/                 # Project (workspace) model and endpoints
-│   ├── documents/                 # Upload, extraction status, embedding pipeline
+│   ├── documents/                 # Upload, background ingestion worker, embedding
 │   ├── detection/                   # Classification, retrieval, LLM reasoning, grounding checks
 │   ├── lambda_functions/
 │   │   └── extraction/               # Containerized Lambda: PDF + OCR extraction
@@ -100,7 +115,7 @@ Clarivo/
         ├── pages/                    # Login, ProjectList
         ├── api/                       # API client configuration
         └── workspace/
-            ├── FilesTab/                # Upload + document list
+            ├── FilesTab/                # File/folder upload, live ingestion status
             └── WorkspaceTab/              # Discrepancy table, evidence, summary
 ```
 
@@ -143,10 +158,10 @@ Full step-by-step environment setup (AWS resource creation, IAM permissions, Lam
 | `/api/auth/login/` | POST | Authenticate, returns a token |
 | `/api/projects/` | GET / POST | List or create project workspaces |
 | `/api/projects/:id/documents/presign/` | POST | Get a presigned S3 upload URL |
-| `/api/projects/:id/documents/confirm/` | POST | Confirm an upload, create the document record |
-| `/api/projects/:id/documents/` | GET | List a project's documents with status and view links |
-| `/api/projects/:id/documents/:doc_id/embed/` | POST | Chunk and index a document into Weaviate |
-| `/api/projects/:id/documents/:doc_id/classify/` | POST | Classify a document's type |
+| `/api/projects/:id/documents/confirm/` | POST | Confirm an upload, create the document record, and queue it for ingestion |
+| `/api/projects/:id/documents/` | GET | List a project's documents with status and view links; also re-queues anything left mid-pipeline by a restart |
+| `/api/projects/:id/documents/:doc_id/embed/` | POST | Chunk and index a document into Weaviate — run automatically by the worker, exposed for manual re-runs |
+| `/api/projects/:id/documents/:doc_id/classify/` | POST | Classify a document's type — run automatically by the worker, exposed for manual re-runs |
 | `/api/projects/:id/check/` | POST | Run detection across all eligible invoices in a project |
 | `/api/projects/:id/discrepancy-table/` | GET | Fetch the current discrepancy table and summary metrics |
 
