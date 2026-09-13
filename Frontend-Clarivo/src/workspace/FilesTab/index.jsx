@@ -2,8 +2,20 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import axios from 'axios';
 import client from '../../api/client';
+import UploadMenu from './UploadMenu';
 
 const POLL_INTERVAL_MS = 2000;
+
+// What the extraction Lambda can actually read — see
+// lambda_functions/extraction/handler.py.  Anything else would be
+// uploaded only to fail, so it is filtered out before we start.  A
+// folder pick in particular sweeps up plenty that does not belong.
+const SUPPORTED_EXTENSIONS = ['.pdf', '.jpg', '.jpeg'];
+
+// S3 keys embed the filename, and the presign endpoint caps it at 255.
+const MAX_FILENAME_LENGTH = 255;
+
+const DEFAULT_CONTENT_TYPE = 'application/octet-stream';
 
 // How each backend status is presented. `spin` marks a status the
 // pipeline is actively working through — those also drive polling.
@@ -65,6 +77,32 @@ const describeStatus = (status) =>
     className: 'bg-gray-50 text-gray-600 border-gray-200',
   };
 
+/**
+ * The name a document is stored and listed under.
+ *
+ * For a folder pick this is the path within the chosen folder, so two
+ * files both called `invoice.pdf` in different subfolders stay tellable
+ * apart in the list.  The extraction Lambda parses the key with a
+ * greedy `.+`, so embedded slashes come through fine.
+ */
+const documentNameFor = (file) => {
+  const relativePath = file.webkitRelativePath || '';
+  if (relativePath && relativePath.length <= MAX_FILENAME_LENGTH) {
+    return relativePath;
+  }
+  return file.name;
+};
+
+const isSupported = (file) =>
+  SUPPORTED_EXTENSIONS.some((ext) => file.name.toLowerCase().endsWith(ext));
+
+// Folder picks include OS metadata (.DS_Store) and directories like
+// .git that the user never meant to hand over.
+const isHidden = (file) =>
+  (file.webkitRelativePath || file.name)
+    .split('/')
+    .some((segment) => segment.startsWith('.'));
+
 function Spinner() {
   return (
     <svg
@@ -84,6 +122,8 @@ export default function FilesTab() {
   const [documents, setDocuments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState(null);
+  const [notice, setNotice] = useState(null);
   const [error, setError] = useState('');
 
   // Read-only: the backend owns the pipeline, this just reports on it.
@@ -119,46 +159,89 @@ export default function FilesTab() {
 
   const handleRefreshClick = () => fetchDocuments(false);
 
-  const handleFileSelect = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+  /** Presign, PUT to S3, confirm. Confirming hands it to the worker. */
+  const uploadOne = async (file) => {
+    const name = documentNameFor(file);
+    // The content type must be identical in the presign and the PUT, or
+    // S3 rejects the signature.  Folder picks often report no type.
+    const contentType = file.type || DEFAULT_CONTENT_TYPE;
 
-    try {
-      setUploading(true);
-      setError('');
+    const presignRes = await client.post(
+      `/projects/${projectId}/documents/presign/`,
+      { filename: name, content_type: contentType }
+    );
+    const { upload_url, s3_key, doc_id } = presignRes.data;
 
-      // 1. Get presigned upload URL from our backend
-      const presignRes = await client.post(
-        `/projects/${projectId}/documents/presign/`,
-        { filename: file.name, content_type: file.type }
-      );
-      const { upload_url, s3_key, doc_id } = presignRes.data;
+    await axios.put(upload_url, file, {
+      headers: { 'Content-Type': contentType },
+    });
 
-      // 2. PUT file bytes directly to S3 (plain axios, no auth header)
-      await axios.put(upload_url, file, {
-        headers: { 'Content-Type': file.type },
+    await client.post(`/projects/${projectId}/documents/confirm/`, {
+      doc_id,
+      filename: name,
+      s3_key,
+      file_type: contentType,
+    });
+  };
+
+  /**
+   * Upload a selection one file at a time.
+   *
+   * Sequential on purpose: it keeps the list filling in visibly, one row
+   * per file, and matches the single-worker queue on the backend.  One
+   * file failing never abandons the rest of the batch.
+   */
+  const handleFilesSelected = async (fileList) => {
+    const selected = Array.from(fileList);
+    const eligible = selected.filter((file) => !isHidden(file) && isSupported(file));
+    const skipped = selected.length - eligible.length;
+
+    setNotice(null);
+
+    if (eligible.length === 0) {
+      setNotice({
+        tone: 'error',
+        text: `No supported documents found in that selection. Clarivo reads ${SUPPORTED_EXTENSIONS.join(', ')} files.`,
       });
-
-      // 3. Confirm the upload.  This also hands the document to the
-      //    backend worker, which takes it through extraction, indexing
-      //    and classification on its own.
-      await client.post(`/projects/${projectId}/documents/confirm/`, {
-        doc_id,
-        filename: file.name,
-        s3_key,
-        file_type: file.type,
-      });
-
-      // 4. Pick the new document up — polling takes over from here.
-      await fetchDocuments(true);
-    } catch (err) {
-      console.error(err);
-      setError('Upload failed. Please try again.');
-    } finally {
-      setUploading(false);
-      // Reset the input so the same file can be re-selected
-      e.target.value = '';
+      return;
     }
+
+    setUploading(true);
+    const failed = [];
+
+    for (let i = 0; i < eligible.length; i += 1) {
+      const file = eligible[i];
+      setProgress({
+        current: i + 1,
+        total: eligible.length,
+        name: documentNameFor(file),
+      });
+
+      try {
+        await uploadOne(file);
+        // Surface the new row as soon as it exists, so a long batch
+        // visibly fills in rather than landing all at once at the end.
+        await fetchDocuments(true);
+      } catch (err) {
+        console.error(`Upload failed for ${file.name}`, err);
+        failed.push(documentNameFor(file));
+      }
+    }
+
+    setProgress(null);
+    setUploading(false);
+
+    const uploaded = eligible.length - failed.length;
+    const parts = [`${uploaded} file${uploaded === 1 ? '' : 's'} uploaded`];
+    if (skipped > 0) parts.push(`${skipped} unsupported skipped`);
+    if (failed.length > 0) parts.push(`${failed.length} failed`);
+
+    setNotice({
+      tone: failed.length > 0 ? 'error' : 'info',
+      text: `${parts.join(' · ')}.`,
+    });
+
+    await fetchDocuments(true);
   };
 
   if (loading) {
@@ -184,24 +267,7 @@ export default function FilesTab() {
       <div className="flex items-center justify-between mb-6 flex-shrink-0">
         <h2 className="text-xl font-semibold text-gray-900">Documents</h2>
         <div className="flex items-center gap-3">
-          {uploading && (
-            <span className="text-sm font-medium text-gray-500 animate-pulse">Uploading...</span>
-          )}
-          <label
-            className={`px-4 py-2 text-sm font-medium rounded-md transition-colors cursor-pointer shadow-sm ${
-              uploading
-                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                : 'bg-blue-800 text-white hover:bg-blue-900'
-            }`}
-          >
-            Upload File
-            <input
-              type="file"
-              className="hidden"
-              onChange={handleFileSelect}
-              disabled={uploading}
-            />
-          </label>
+          <UploadMenu disabled={uploading} onFilesSelected={handleFilesSelected} />
           <button
             onClick={handleRefreshClick}
             disabled={uploading}
@@ -211,6 +277,47 @@ export default function FilesTab() {
           </button>
         </div>
       </div>
+
+      {progress && (
+        <div className="mb-4 flex-shrink-0 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+          <div className="flex items-baseline justify-between gap-4 mb-2">
+            <span className="text-sm font-medium text-blue-900 whitespace-nowrap">
+              Uploading {progress.current} of {progress.total}
+            </span>
+            <span className="text-sm text-blue-800/70 truncate" title={progress.name}>
+              {progress.name}
+            </span>
+          </div>
+          <div className="h-1.5 w-full bg-blue-200 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-blue-800 rounded-full transition-all duration-300"
+              style={{ width: `${(progress.current / progress.total) * 100}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {notice && (
+        <div
+          className={`mb-4 flex-shrink-0 flex items-start justify-between gap-4 px-4 py-3 rounded-lg border text-sm ${
+            notice.tone === 'error'
+              ? 'bg-red-50 border-red-200 text-red-700'
+              : 'bg-emerald-50 border-emerald-200 text-emerald-800'
+          }`}
+        >
+          <span>{notice.text}</span>
+          <button
+            onClick={() => setNotice(null)}
+            className="opacity-60 hover:opacity-100 transition-opacity flex-shrink-0"
+            aria-label="Dismiss"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+      )}
 
       {documents.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center p-12 text-center border-2 border-dashed border-gray-200 rounded-xl bg-gray-50">
@@ -246,7 +353,7 @@ export default function FilesTab() {
                         rel="noopener noreferrer"
                         className="text-blue-800 font-medium hover:text-blue-900 hover:underline flex items-center gap-2"
                       >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400 flex-shrink-0">
                           <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
                           <polyline points="13 2 13 9 20 9"></polyline>
                         </svg>
