@@ -82,8 +82,13 @@ class ConfirmUploadView(APIView):
     """
     POST /api/projects/<project_id>/documents/confirm/
 
-    Called by the frontend after a successful S3 upload.  Creates a
-    document record in DynamoDB with status ``pending_extraction``.
+    Called by the frontend after a successful S3 upload.  Creates the
+    document record in DynamoDB and hands the document to the background
+    ingestion worker, which carries it through extraction, embedding and
+    classification without any further calls from the client.
+
+    Returns immediately — the client watches progress by polling the
+    document list.
     """
 
     authentication_classes = [TokenAuthentication]
@@ -99,15 +104,20 @@ class ConfirmUploadView(APIView):
         serializer = ConfirmRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        from documents.dynamo import put_document_stub
+        from documents.dynamo import confirm_document
+        from documents.pipeline import enqueue_document
 
-        item = put_document_stub(
+        doc_id = serializer.validated_data["doc_id"]
+
+        item = confirm_document(
             project_id=project.pk,
-            doc_id=serializer.validated_data["doc_id"],
+            doc_id=doc_id,
             filename=serializer.validated_data["filename"],
             s3_key=serializer.validated_data["s3_key"],
             file_type=serializer.validated_data["file_type"],
         )
+
+        enqueue_document(project.pk, doc_id)
 
         return Response(item, status=status.HTTP_201_CREATED)
 
@@ -118,6 +128,10 @@ class DocumentListView(APIView):
 
     Returns all document records for the project from DynamoDB, each
     enriched with a short-lived presigned GET URL (``view_url``).
+
+    This is also the endpoint the frontend polls while an upload is being
+    processed, so it doubles as the recovery point: any document left
+    mid-pipeline by a server restart is re-queued here.
     """
 
     authentication_classes = [TokenAuthentication]
@@ -131,8 +145,14 @@ class DocumentListView(APIView):
         )
 
         from documents.dynamo import list_documents
+        from documents.pipeline import resume_stalled_documents
 
         items = list_documents(project.pk)
+
+        # Pass the items we already have — this costs no extra read, and
+        # documents the worker is already handling are skipped by the
+        # in-flight guard.
+        resume_stalled_documents(project.pk, items)
 
         s3_client = boto3.client(
             "s3",

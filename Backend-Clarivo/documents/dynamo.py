@@ -21,10 +21,20 @@ _dynamodb = boto3.resource(
 _table = _dynamodb.Table(settings.DYNAMODB_TABLE_NAME)
 
 
-def put_document_stub(project_id, doc_id, filename, s3_key, file_type):
+def confirm_document(project_id, doc_id, filename, s3_key, file_type):
     """
-    Write a new document record to DynamoDB with status
-    ``pending_extraction``.
+    Record the metadata for a freshly uploaded document.
+
+    This deliberately uses ``update_item`` rather than ``put_item``.  The
+    S3 PutObject event fires the extraction Lambda the moment the browser
+    finishes uploading, which can beat this call — and a ``put_item`` is
+    a whole-item replace, so it would overwrite the ``body`` and
+    ``extracted`` status the Lambda had just written, stranding the
+    document at ``pending_extraction`` forever.
+
+    Writing only the metadata attributes leaves ``body`` untouched, and
+    ``if_not_exists`` on the status sets ``pending_extraction`` only when
+    the Lambda has not already moved the document past it.
 
     Parameters
     ----------
@@ -39,18 +49,33 @@ def put_document_stub(project_id, doc_id, filename, s3_key, file_type):
         ``projects/<project_id>/documents/<doc_id>/<filename>``.
     file_type : str
         MIME type or extension (e.g. ``application/pdf``).
+
+    Returns
+    -------
+    dict
+        The full updated item.
     """
-    item = {
-        "PK": f"PROJECT#{project_id}",
-        "SK": f"DOC#{doc_id}",
-        "filename": filename,
-        "s3_key": s3_key,
-        "file_type": file_type,
-        "status": "pending_extraction",
-        "uploaded_at": datetime.now(timezone.utc).isoformat(),
-    }
-    _table.put_item(Item=item)
-    return item
+    response = _table.update_item(
+        Key={
+            "PK": f"PROJECT#{project_id}",
+            "SK": f"DOC#{doc_id}",
+        },
+        UpdateExpression=(
+            "SET filename = :filename, s3_key = :s3_key, "
+            "file_type = :file_type, uploaded_at = :uploaded_at, "
+            "#s = if_not_exists(#s, :pending)"
+        ),
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={
+            ":filename": filename,
+            ":s3_key": s3_key,
+            ":file_type": file_type,
+            ":uploaded_at": datetime.now(timezone.utc).isoformat(),
+            ":pending": "pending_extraction",
+        },
+        ReturnValues="ALL_NEW",
+    )
+    return response.get("Attributes")
 
 
 def list_documents(project_id):

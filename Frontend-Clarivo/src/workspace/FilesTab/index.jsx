@@ -3,15 +3,90 @@ import { useParams } from 'react-router-dom';
 import axios from 'axios';
 import client from '../../api/client';
 
+const POLL_INTERVAL_MS = 2000;
+
+// How each backend status is presented. `spin` marks a status the
+// pipeline is actively working through — those also drive polling.
+const STATUS_DISPLAY = {
+  pending_extraction: {
+    label: 'Extracting',
+    className: 'bg-amber-50 text-amber-700 border-amber-200',
+    spin: true,
+  },
+  extracted: {
+    label: 'Queued',
+    className: 'bg-amber-50 text-amber-700 border-amber-200',
+    spin: true,
+  },
+  embedding: {
+    label: 'Indexing',
+    className: 'bg-blue-50 text-blue-800 border-blue-200',
+    spin: true,
+  },
+  embedded: {
+    label: 'Indexed',
+    className: 'bg-purple-50 text-purple-700 border-purple-200',
+    spin: true,
+  },
+  classifying: {
+    label: 'Classifying',
+    className: 'bg-teal-50 text-teal-800 border-teal-200',
+    spin: true,
+  },
+  classified: {
+    label: 'Classified',
+    className: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  },
+  checked: {
+    label: 'Checked',
+    className: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  },
+  pending_ocr: {
+    label: 'Unsupported file',
+    className: 'bg-gray-50 text-gray-600 border-gray-200',
+  },
+  failed_extraction: {
+    label: 'Extraction failed',
+    className: 'bg-red-50 text-red-700 border-red-200',
+  },
+  failed_embedding: {
+    label: 'Indexing failed',
+    className: 'bg-red-50 text-red-700 border-red-200',
+  },
+  failed_classification: {
+    label: 'Classification failed',
+    className: 'bg-red-50 text-red-700 border-red-200',
+  },
+};
+
+const describeStatus = (status) =>
+  STATUS_DISPLAY[status] || {
+    label: (status || 'unknown').replace(/_/g, ' '),
+    className: 'bg-gray-50 text-gray-600 border-gray-200',
+  };
+
+function Spinner() {
+  return (
+    <svg
+      className="animate-spin -ml-0.5 mr-1.5 h-3 w-3"
+      xmlns="http://www.w3.org/2000/svg"
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+    </svg>
+  );
+}
+
 export default function FilesTab() {
   const { id: projectId } = useParams();
   const [documents, setDocuments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
-  const [indexingDocs, setIndexingDocs] = useState(new Set());
-  const [classifyingDocs, setClassifyingDocs] = useState(new Set());
 
+  // Read-only: the backend owns the pipeline, this just reports on it.
   const fetchDocuments = useCallback(async (silent = false) => {
     const isSilent = silent === true;
     try {
@@ -19,62 +94,6 @@ export default function FilesTab() {
       setError('');
       const res = await client.get(`/projects/${projectId}/documents/`);
       setDocuments(res.data);
-
-      const extractedDocs = res.data.filter(doc => doc.status === 'extracted');
-      if (extractedDocs.length > 0) {
-        const docIds = extractedDocs.map(doc => doc.SK.replace('DOC#', ''));
-        
-        setIndexingDocs(prev => {
-          const next = new Set(prev);
-          docIds.forEach(id => next.add(id));
-          return next;
-        });
-
-        Promise.allSettled(
-          docIds.map(id => client.post(`/projects/${projectId}/documents/${id}/embed/`))
-        ).then(() => {
-          client.get(`/projects/${projectId}/documents/`)
-            .then(refreshRes => {
-              setDocuments(refreshRes.data);
-            })
-            .catch(console.error)
-            .finally(() => {
-              setIndexingDocs(prev => {
-                const next = new Set(prev);
-                docIds.forEach(id => next.delete(id));
-                return next;
-              });
-            });
-        });
-      }
-
-      const embeddedDocs = res.data.filter(doc => doc.status === 'embedded');
-      if (embeddedDocs.length > 0) {
-        const docIds = embeddedDocs.map(doc => doc.SK.replace('DOC#', ''));
-        
-        setClassifyingDocs(prev => {
-          const next = new Set(prev);
-          docIds.forEach(id => next.add(id));
-          return next;
-        });
-
-        Promise.allSettled(
-          docIds.map(id => client.post(`/projects/${projectId}/documents/${id}/classify/`))
-        ).then(() => {
-          client.get(`/projects/${projectId}/documents/`)
-            .then(refreshRes => {
-              setDocuments(refreshRes.data);
-            })
-            .catch(console.error)
-            .finally(() => {
-              setClassifyingDocs(prev => {
-                const next = new Set(prev);
-                docIds.forEach(id => next.delete(id));
-                return next;
-              });
-            });
-        });
-      }
     } catch (err) {
       console.error(err);
       if (!isSilent) setError('Failed to load documents.');
@@ -86,6 +105,17 @@ export default function FilesTab() {
   useEffect(() => {
     fetchDocuments();
   }, [fetchDocuments]);
+
+  // Poll only while something is actually in flight, and stop as soon as
+  // every document has settled.  Being unmounted mid-poll is harmless —
+  // the work continues server-side either way.
+  const isProcessing = documents.some((doc) => describeStatus(doc.status).spin);
+
+  useEffect(() => {
+    if (!isProcessing) return undefined;
+    const timer = setInterval(() => fetchDocuments(true), POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [isProcessing, fetchDocuments]);
 
   const handleRefreshClick = () => fetchDocuments(false);
 
@@ -109,7 +139,9 @@ export default function FilesTab() {
         headers: { 'Content-Type': file.type },
       });
 
-      // 3. Confirm upload with our backend
+      // 3. Confirm the upload.  This also hands the document to the
+      //    backend worker, which takes it through extraction, indexing
+      //    and classification on its own.
       await client.post(`/projects/${projectId}/documents/confirm/`, {
         doc_id,
         filename: file.name,
@@ -117,8 +149,8 @@ export default function FilesTab() {
         file_type: file.type,
       });
 
-      // 4. Refresh the list
-      await fetchDocuments();
+      // 4. Pick the new document up — polling takes over from here.
+      await fetchDocuments(true);
     } catch (err) {
       console.error(err);
       setError('Upload failed. Please try again.');
@@ -138,7 +170,7 @@ export default function FilesTab() {
       <div className="p-8 text-center">
         <p className="text-red-500 mb-4">{error}</p>
         <button
-          onClick={fetchDocuments}
+          onClick={handleRefreshClick}
           className="text-blue-800 hover:underline"
         >
           Try again
@@ -203,10 +235,8 @@ export default function FilesTab() {
             </thead>
             <tbody className="divide-y divide-gray-200 bg-white">
               {documents.map((doc) => {
-                const docId = doc.SK.replace('DOC#', '');
-                const isIndexing = indexingDocs.has(docId);
-                const isClassifying = classifyingDocs.has(docId);
-                
+                const display = describeStatus(doc.status);
+
                 return (
                   <tr key={doc.SK} className="hover:bg-gray-50 transition-colors">
                     <td className="py-4 px-6">
@@ -231,39 +261,12 @@ export default function FilesTab() {
                       )}
                     </td>
                     <td className="py-4 px-6">
-                      {isIndexing ? (
-                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-900 border border-blue-200">
-                          <svg className="animate-spin -ml-0.5 mr-1.5 h-3 w-3 text-blue-900" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                          </svg>
-                          Indexing
-                        </span>
-                      ) : isClassifying ? (
-                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-teal-100 text-teal-800 border border-teal-200">
-                          <svg className="animate-spin -ml-0.5 mr-1.5 h-3 w-3 text-teal-800" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                          </svg>
-                          Classifying
-                        </span>
-                      ) : (
-                        <span
-                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${
-                            doc.status === 'classified'
-                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                              : doc.status === 'embedded'
-                                ? 'bg-purple-50 text-purple-700 border-purple-200'
-                                : doc.status === 'extracted'
-                                  ? 'bg-green-50 text-green-700 border-green-200'
-                                  : doc.status === 'pending_extraction' || doc.status === 'pending_ocr'
-                                    ? 'bg-amber-50 text-amber-700 border-amber-200'
-                                    : 'bg-gray-50 text-gray-600 border-gray-200'
-                          }`}
-                        >
-                          <span className="capitalize">{doc.status.replace('_', ' ')}</span>
-                        </span>
-                      )}
+                      <span
+                        className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${display.className}`}
+                      >
+                        {display.spin && <Spinner />}
+                        {display.label}
+                      </span>
                     </td>
                   </tr>
                 );
