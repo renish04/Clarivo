@@ -4,6 +4,31 @@ import apiClient from '../../api/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
+// The four-state verdict from detection/grounding.py. "Not found" and
+// "the document says otherwise" are different failures and read very
+// differently to someone deciding whether to trust a finding.
+const GROUNDING_DISPLAY = {
+  verified: { icon: '✅', className: 'text-green-600', label: 'Verified against the cited document' },
+  partial: { icon: '◐', className: 'text-amber-600', label: 'Partially verified' },
+  unsupported: { icon: '⚠️', className: 'text-red-500', label: 'Not found in the cited document' },
+  contradicted: { icon: '❌', className: 'text-red-600', label: 'Contradicted by the cited document' },
+  unresolved_source: { icon: '❓', className: 'text-gray-400', label: 'Cited document was not in the retrieved context' },
+};
+
+/**
+ * Describe an evidence item's grounding.
+ *
+ * Falls back to the old boolean `verified` flag so documents checked
+ * before structured grounding existed still render sensibly.
+ */
+const describeGrounding = (ev) => {
+  const status = ev.grounding?.status;
+  if (status && GROUNDING_DISPLAY[status]) {
+    return { ...GROUNDING_DISPLAY[status], detail: ev.grounding.detail };
+  }
+  return ev.verified === false ? GROUNDING_DISPLAY.unsupported : GROUNDING_DISPLAY.verified;
+};
+
 const getStatusBadgeClass = (status) => {
   const s = status?.toLowerCase() || '';
   if (s === 'clean') return 'bg-green-100 text-green-800 border-green-200';
@@ -225,28 +250,35 @@ export default function WorkspaceTab() {
                             <div className="space-y-2 mt-3">
                               <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Evidence</h4>
                               <ul className="space-y-2">
-                                {finding.evidence.map((ev, evIdx) => (
-                                  <li key={evIdx} className="text-sm flex items-start gap-2 bg-white p-2 rounded border border-gray-200 shadow-sm">
-                                    <div className="mt-0.5">
-                                      {ev.verified === false ? (
-                                        <span title="Warning: AI claim not found exactly in source text" className="text-red-500 text-base leading-none">⚠️</span>
-                                      ) : (
-                                        <span title="Verified exactly in source text" className="text-green-500 text-base leading-none">✅</span>
-                                      )}
-                                    </div>
-                                    <div>
-                                      <span className="text-gray-800 font-medium">"{ev.claim}"</span>
-                                      <span className="text-gray-400 mx-2">—</span>
-                                      {filenameToUrl[ev.source_doc] ? (
-                                        <a href={filenameToUrl[ev.source_doc]} target="_blank" rel="noopener noreferrer" className="text-blue-700 hover:underline font-medium">
-                                          {ev.source_doc}
-                                        </a>
-                                      ) : (
-                                        <span className="text-gray-600 italic">{ev.source_doc}</span>
-                                      )}
-                                    </div>
-                                  </li>
-                                ))}
+                                {finding.evidence.map((ev, evIdx) => {
+                                  const grounding = describeGrounding(ev);
+                                  // `claim` is the pre-structured-grounding field.
+                                  const cited = ev.quote || ev.claim || '';
+
+                                  return (
+                                    <li key={evIdx} className="text-sm flex items-start gap-2 bg-white p-2 rounded border border-gray-200 shadow-sm">
+                                      <div className="mt-0.5">
+                                        <span title={grounding.label} className={`text-base leading-none ${grounding.className}`}>
+                                          {grounding.icon}
+                                        </span>
+                                      </div>
+                                      <div className="min-w-0">
+                                        <span className="text-gray-800 font-medium break-words">"{cited}"</span>
+                                        <span className="text-gray-400 mx-2">—</span>
+                                        {filenameToUrl[ev.source_doc] ? (
+                                          <a href={filenameToUrl[ev.source_doc]} target="_blank" rel="noopener noreferrer" className="text-blue-700 hover:underline font-medium">
+                                            {ev.source_doc}
+                                          </a>
+                                        ) : (
+                                          <span className="text-gray-600 italic">{ev.source_doc}</span>
+                                        )}
+                                        {grounding.detail && (
+                                          <p className={`mt-1 text-xs ${grounding.className}`}>{grounding.detail}</p>
+                                        )}
+                                      </div>
+                                    </li>
+                                  );
+                                })}
                               </ul>
                             </div>
                           )}

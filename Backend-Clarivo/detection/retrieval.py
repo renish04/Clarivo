@@ -11,9 +11,13 @@ def get_project_context(project_id, exclude_doc_id, query_text, token_budget=200
     Retrieves context for a given project from Weaviate using a hybrid search,
     excluding the specified document. Assembles a text block containing the
     most relevant chunks, keeping the total size approximately within token_budget.
-    
+
     Returns:
-        tuple: (context_string, list_of_included_filenames)
+        tuple: (context_string, list_of_included_filenames, chunks_by_filename)
+
+    ``chunks_by_filename`` holds the same text keyed by source document, so
+    grounding verification can check a claim against the document it was
+    actually attributed to rather than against the whole prompt.
     """
     print(f"\n--- [RETRIEVAL] Fetching context for project {project_id}, excluding doc {exclude_doc_id} ---")
     
@@ -63,8 +67,9 @@ def get_project_context(project_id, exclude_doc_id, query_text, token_budget=200
     print(f"[RETRIEVAL] Assembling context blocks (budget: {token_budget} tokens)...")
     context_parts = []
     included_filenames = set()
+    chunks_by_filename = {}
     current_tokens = 0
-    
+
     for obj in objects:
         props = obj.properties
         chunk_doc_id = props.get("doc_id")
@@ -90,8 +95,16 @@ def get_project_context(project_id, exclude_doc_id, query_text, token_budget=200
         included_filenames.add(filename)
         current_tokens += approx_tokens
 
+        # Keep the raw chunk text grouped by its source document, so a
+        # claim can later be checked against just that document.
+        chunks_by_filename.setdefault(filename, []).append(chunk_text)
+
     context_string = "".join(context_parts)
+    chunks_by_filename = {
+        name: "\n".join(chunks) for name, chunks in chunks_by_filename.items()
+    }
+
     print(f"[RETRIEVAL] Assembly complete. Included {len(included_filenames)} unique documents: {list(included_filenames)}")
     print(f"[RETRIEVAL] Total approximate tokens used: {current_tokens}")
     print(f"--- [RETRIEVAL] Complete ---\n")
-    return context_string, list(included_filenames)
+    return context_string, list(included_filenames), chunks_by_filename

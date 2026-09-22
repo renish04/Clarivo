@@ -7,6 +7,7 @@ from Django settings (which load from .env).
 """
 
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import boto3
 from django.conf import settings
@@ -150,11 +151,31 @@ def update_document_classification(project_id, doc_id, doc_type, new_status, sup
     )
     return response.get("Attributes")
 
+def _to_dynamo_safe(value):
+    """Recursively convert a value into something DynamoDB will accept.
+
+    DynamoDB has no float type and boto3 refuses to serialise one.  Since
+    grounding verification puts real numbers into the findings — cited
+    amounts, similarity ratios — every float has to become a Decimal on
+    the way in.  ``str()`` first, so the Decimal carries the number that
+    was printed rather than the binary float approximation of it.
+    """
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {key: _to_dynamo_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_dynamo_safe(item) for item in value]
+    return value
+
+
 def update_document_check_results(project_id, doc_id, discrepancy_status, findings, resolution, table_row_markdown, new_status):
     """
     Save the results from detect_discrepancies into the document record,
     and update its status to 'checked'.
     """
+    findings = _to_dynamo_safe(findings)
+
     response = _table.update_item(
         Key={
             "PK": f"PROJECT#{project_id}",

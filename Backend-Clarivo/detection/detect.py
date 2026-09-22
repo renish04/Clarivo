@@ -1,56 +1,16 @@
 import json
 import logging
-import re
 from google import genai
 from google.genai import types
 
 from documents.dynamo import get_document
 from detection.retrieval import get_project_context
 from detection.prompts import DETECTION_SYSTEM_PROMPT
+from detection.grounding import apply_grounding_policy, verify_grounding
 
 logger = logging.getLogger(__name__)
 gemini_client = genai.Client()
 
-def _normalize_text(text: str) -> str:
-    """Strips currency symbols, commas, extra whitespace, and lowercases text."""
-    if not text:
-        return ""
-    # Lowercase
-    text = text.lower()
-    # Remove currency symbols and commas
-    text = re.sub(r'[$£€,]', '', text)
-    # Collapse whitespace
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
-
-def verify_grounding(findings, context_text):
-    """
-    Checks each evidence claim against the context text.
-    Marks evidence['verified'] = True/False.
-    """
-    print("\n--- [VERIFY GROUNDING] Starting evidence verification ---")
-    norm_context = _normalize_text(context_text)
-    
-    for finding in findings:
-        evidence_list = finding.get("evidence", [])
-        for evidence in evidence_list:
-            claim = evidence.get("claim", "")
-            if not claim:
-                print(f"[VERIFY GROUNDING] FAILED: Empty claim provided.")
-                evidence["verified"] = False
-                continue
-                
-            norm_claim = _normalize_text(claim)
-            
-            if norm_claim and norm_claim in norm_context:
-                print(f"[VERIFY GROUNDING] PASSED: Claim '{claim}' found in context.")
-                evidence["verified"] = True
-            else:
-                print(f"[VERIFY GROUNDING] FAILED: Claim '{claim}' NOT found in context.")
-                evidence["verified"] = False
-                
-    print("--- [VERIFY GROUNDING] Complete ---\n")
-    return findings
 
 def fallback_response(filename):
     """Returns a safe fallback dict if generation or parsing fails."""
@@ -84,11 +44,16 @@ def detect_discrepancies(project_id, doc_id):
 
     # 2. Retrieve related context
     print(f"[DETECT] Fetching related context for {filename}...")
-    context_str, included_filenames = get_project_context(
+    context_str, included_filenames, chunks_by_filename = get_project_context(
         project_id=project_id,
         exclude_doc_id=doc_id,
         query_text=body
     )
+
+    # The invoice under review is itself a citable source, so it belongs
+    # in the map grounding verification looks things up in.
+    docs_by_name = dict(chunks_by_filename)
+    docs_by_name[filename] = body
     
     # 3. Construct the prompt
     user_message = (
@@ -127,10 +92,16 @@ def detect_discrepancies(project_id, doc_id):
         result_dict = json.loads(raw_text)
         print(f"[DETECT] SUCCESS: Parsed JSON response successfully.")
         
-        # Verify grounding against the user_message which contains both the invoice and the context
+        # Verify each claim against the document it was attributed to,
+        # then let the result constrain the model's own verdict.
         if "findings" in result_dict:
-            result_dict["findings"] = verify_grounding(result_dict["findings"], user_message)
-            
+            result_dict["findings"] = verify_grounding(
+                result_dict["findings"], docs_by_name
+            )
+            result_dict, policy_notes = apply_grounding_policy(result_dict)
+            if policy_notes:
+                result_dict["grounding_notes"] = policy_notes
+
         print(f"--- [DETECT] Complete for {filename} ---")
         return result_dict
         
