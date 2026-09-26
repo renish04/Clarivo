@@ -125,3 +125,47 @@ def embed_document(project_id: str, doc_id: str, body_text: str) -> int:
 
     return len(data_objects)
 
+
+
+def delete_project_chunks(project_id: str) -> int:
+    """Delete every indexed chunk belonging to a project.
+
+    Weaviate caps how many objects a single ``delete_many`` will
+    remove (``QUERY_MAXIMUM_RESULTS`` server-side), so this loops
+    until nothing matches the filter any more rather than assuming one
+    call clears a large project.
+
+    Parameters
+    ----------
+    project_id : str
+        The Django project PK (as a string).
+
+    Returns
+    -------
+    int
+        The number of chunks deleted.  Zero if the collection does not
+        exist yet, which is the normal state for a project whose
+        documents never reached the embedding stage.
+    """
+    from weaviate.classes.query import Filter
+
+    client = get_weaviate_client()
+    try:
+        if not client.collections.exists(COLLECTION_NAME):
+            return 0
+
+        collection = client.collections.get(COLLECTION_NAME)
+        where = Filter.by_property("project_id").equal(str(project_id))
+
+        deleted = 0
+        # Bounded so a delete that stops making progress cannot spin
+        # forever against the cluster.
+        for _ in range(100):
+            result = collection.data.delete_many(where=where)
+            deleted += result.successful
+            if result.matches == 0 or result.successful == 0:
+                break
+
+        return deleted
+    finally:
+        client.close()

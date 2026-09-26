@@ -98,6 +98,46 @@ def list_documents(project_id):
     return response.get("Items", [])
 
 
+def delete_project_items(project_id):
+    """
+    Delete every item in a project's partition.
+
+    Deliberately *not* filtered by sort key: this is the cleanup run
+    when a project is deleted, so it must take the documents
+    (``DOC#``), the chat threads (``CHAT#``) and anything a later
+    feature adds to the same partition.  A prefix filter here would
+    quietly start leaving data behind the first time a new sort key
+    was introduced.
+
+    Returns the number of items deleted.
+    """
+    keys = []
+    start_key = None
+    while True:
+        kwargs = {
+            "KeyConditionExpression": "PK = :pk",
+            "ExpressionAttributeValues": {":pk": f"PROJECT#{project_id}"},
+            # Only the keys are needed to delete, and document bodies
+            # are large.
+            "ProjectionExpression": "PK, SK",
+        }
+        if start_key:
+            kwargs["ExclusiveStartKey"] = start_key
+
+        response = _table.query(**kwargs)
+        keys.extend(response.get("Items", []))
+
+        start_key = response.get("LastEvaluatedKey")
+        if not start_key:
+            break
+
+    with _table.batch_writer() as batch:
+        for key in keys:
+            batch.delete_item(Key={"PK": key["PK"], "SK": key["SK"]})
+
+    return len(keys)
+
+
 def get_document(project_id, doc_id):
     """
     Fetch a single document record from DynamoDB.

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import client from '../api/client';
 import Logo from '../components/Logo';
@@ -10,9 +10,100 @@ export default function ProjectsLayout() {
   
   const [isCreating, setIsCreating] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
-  
+
+  // Per-row controls: which row's menu is open, which row is being
+  // renamed, and the draft name while it is.
+  const [menuOpenId, setMenuOpenId] = useState(null);
+  const [renamingId, setRenamingId] = useState(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [busyId, setBusyId] = useState(null);
+
+  const menuRef = useRef(null);
+
   const location = useLocation();
   const navigate = useNavigate();
+
+  // Close the open row menu on any click outside it.
+  useEffect(() => {
+    if (menuOpenId === null) return;
+
+    const handleClickOutside = (event) => {
+      if (menuRef.current && !menuRef.current.contains(event.target)) {
+        setMenuOpenId(null);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [menuOpenId]);
+
+  const startRename = (project) => {
+    setMenuOpenId(null);
+    setRenamingId(project.id);
+    setRenameValue(project.name);
+  };
+
+  const cancelRename = () => {
+    setRenamingId(null);
+    setRenameValue('');
+  };
+
+  const handleRenameSubmit = async (e, project) => {
+    e.preventDefault();
+
+    const name = renameValue.trim();
+    if (!name || name === project.name) {
+      cancelRename();
+      return;
+    }
+
+    try {
+      setBusyId(project.id);
+      await client.patch(`/projects/${project.id}/`, { name });
+      cancelRename();
+      await fetchProjects();
+    } catch (err) {
+      console.error('Failed to rename project', err);
+      alert('Could not rename the project. Please try again.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleDelete = async (project) => {
+    setMenuOpenId(null);
+
+    const confirmed = window.confirm(
+      `Delete "${project.name}"?\n\n` +
+        'This permanently deletes the project and every document in it - ' +
+        'the uploaded files, their extracted text, the discrepancy findings ' +
+        'and all chat history. This cannot be undone.'
+    );
+    if (!confirmed) return;
+
+    try {
+      setBusyId(project.id);
+      await client.delete(`/projects/${project.id}/`);
+      await fetchProjects();
+
+      // The open project just stopped existing, so don't leave the
+      // workspace sitting on a dead route.
+      if (location.pathname === `/projects/${project.id}`) {
+        navigate('/projects');
+      }
+    } catch (err) {
+      console.error('Failed to delete project', err);
+      // A partial-cleanup failure comes back with an explanation and
+      // the project intact — worth showing verbatim rather than
+      // replacing with a generic message.
+      alert(
+        err.response?.data?.detail ||
+          'Could not delete the project. Please try again.'
+      );
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   const fetchProjects = async () => {
     try {
@@ -124,20 +215,95 @@ export default function ProjectsLayout() {
           ) : (
             projects.map((project) => {
               const isActive = location.pathname === `/projects/${project.id}`;
+              const isMenuOpen = menuOpenId === project.id;
+              const isBusy = busyId === project.id;
+
+              // Renaming replaces the row with an input, the same way
+              // creating a project replaces the button above.
+              if (renamingId === project.id) {
+                return (
+                  <form
+                    key={project.id}
+                    onSubmit={(e) => handleRenameSubmit(e, project)}
+                    className="px-1 py-1"
+                  >
+                    <input
+                      type="text"
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onBlur={() => cancelRename()}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') cancelRename();
+                      }}
+                      disabled={isBusy}
+                      className="w-full px-2 py-1.5 border border-blue-800 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-800 disabled:opacity-50"
+                      autoFocus
+                    />
+                  </form>
+                );
+              }
+
               return (
-                <Link
-                  key={project.id}
-                  to={`/projects/${project.id}`}
-                  className={`
-                    block px-3 py-2.5 rounded-lg text-sm truncate transition-colors
-                    ${isActive 
-                      ? 'bg-white font-medium text-gray-900 shadow-sm border border-gray-200' 
-                      : 'text-gray-700 hover:bg-gray-200 hover:text-gray-900 border border-transparent'
-                    }
-                  `}
-                >
-                  {project.name}
-                </Link>
+                <div key={project.id} className="relative group">
+                  <Link
+                    to={`/projects/${project.id}`}
+                    className={`
+                      block pl-3 pr-9 py-2.5 rounded-lg text-sm truncate transition-colors
+                      ${isActive
+                        ? 'bg-white font-medium text-gray-900 shadow-sm border border-gray-200'
+                        : 'text-gray-700 hover:bg-gray-200 hover:text-gray-900 border border-transparent'
+                      }
+                      ${isBusy ? 'opacity-50 pointer-events-none' : ''}
+                    `}
+                  >
+                    {project.name}
+                  </Link>
+
+                  {/* Hidden until the row is hovered or focused — and
+                      kept visible while its own menu is open, so the
+                      button does not vanish under the pointer. */}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      setMenuOpenId(isMenuOpen ? null : project.id);
+                    }}
+                    aria-label={`Options for ${project.name}`}
+                    className={`
+                      absolute right-1.5 top-1/2 -translate-y-1/2 p-1 rounded
+                      text-gray-500 hover:text-gray-900 hover:bg-gray-300/60 transition-all
+                      ${isMenuOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'}
+                    `}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                      <circle cx="12" cy="5" r="1.75" />
+                      <circle cx="12" cy="12" r="1.75" />
+                      <circle cx="12" cy="19" r="1.75" />
+                    </svg>
+                  </button>
+
+                  {isMenuOpen && (
+                    <div
+                      ref={menuRef}
+                      className="absolute right-1 top-[calc(100%-4px)] z-30 w-36 bg-white border border-gray-200 rounded-md shadow-lg py-1"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => startRename(project)}
+                        className="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                      >
+                        Rename
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(project)}
+                        className="w-full text-left px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  )}
+                </div>
               );
             })
           )}
