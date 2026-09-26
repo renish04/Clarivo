@@ -8,7 +8,7 @@
 
 ## Status
 
-This repository implements the **Prototype-1** — a working, end-to-end vertical slice covering ingestion, extraction, semantic indexing, and LLM-driven discrepancy detection and auto-resolution for a single project workspace. It is built to prove a specific architectural thesis as a working prototype, where the upcoming features make it a final commercial product. 
+This repository implements the **Prototype-1** — a working, end-to-end vertical slice covering ingestion, extraction, semantic indexing, LLM-driven discrepancy detection and auto-resolution, and a document-scoped chat surface that explains those results, for a single project workspace. It is built to prove a specific architectural thesis as a working prototype, where the upcoming features make it a final commercial product. 
 See [Roadmap](#roadmap) for what's deliberately out of scope right now, and why.
 
 ---
@@ -39,6 +39,8 @@ Where a case resolves itself — for example, two partial deliveries that togeth
 - **Autonomous resolution** — cases explainable by available evidence close themselves, with a full, auditable evidence trail
 - **Incremental re-evaluation** — a newly uploaded document automatically re-opens any previously-checked case it's relevant to, rather than requiring a manual re-check
 - **Touchless-rate reporting** — the percentage of documents resolved without human review is a first-class, always-visible metric, not an afterthought
+- **Ask Clarivo — document-scoped chat** — pick any document and ask about it in plain language; the assistant answers from that document, its project context, and, crucially, *Clarivo's own stored analysis of it*, so asking "why was this flagged?" explains the verdict already on the record rather than improvising a second opinion
+- **Complete project deletion** — deleting a project clears its files from S3, its records from DynamoDB and its chunks from Weaviate before the project row itself goes, so nothing is left orphaned in a store that no longer has anything pointing at it
 
 ## Architecture
 
@@ -73,11 +75,21 @@ flowchart TD
     M --> N[Workspace tab:\ndiscrepancy table]
     W3 -->|new order/delivery/governing doc| O[Re-open matching\nchecked invoices]
     O --> J
+
+    U[User picks one document\nand asks a question] --> V[Hybrid retrieval\nquestion as the query]
+    I --> V
+    M -.->|stored verdict, findings,\nevidence, resolution| X
+    V --> X[Gemini: answer grounded in\ndocument + analysis + context]
+    Y[(DynamoDB: chat history\nCHAT# sort key)] -.-> X
+    X --> Y
+    X --> Z[Ask Clarivo tab:\nanswer with source chips]
 ```
 
 Ingestion is owned by the backend, not the browser. Confirming an upload queues the document on a single background worker that waits for extraction to land, then indexes and classifies it — so a document finishes its journey whether or not the tab that uploaded it is still open. The frontend polls only to display progress, and stops once every document has settled. Because the worker processes one document at a time, a folder of fifty files queues up behind itself rather than firing fifty simultaneous model calls.
 
 New evidence doesn't just sit in the index — classifying an order, delivery, or governing document as such automatically re-opens any already-checked invoice it might be relevant to, so a case resolved yesterday can genuinely change today.
+
+Chat reads from the same index but not in the same way. Detection embeds a whole invoice and deliberately *excludes* that invoice from retrieval, because including it would only return the claims it is trying to verify. Chat embeds the user's question and deliberately *includes* the selected document, because that is the thing being asked about. The two therefore run separate retrieval paths rather than sharing one with a flag.
 
 ## Tech Stack
 
@@ -93,7 +105,7 @@ New evidence doesn't just sit in the index — classifying an order, delivery, o
 | LLM | Gemini 2.5 Flash | Full 1M-token context window on a genuine free tier — evaluated directly against paid-only alternatives before selection |
 | Frontend framework | React + Vite | Fast local dev loop |
 | Styling | Tailwind CSS | Utility-first, no separate design system to maintain for a prototype at this stage |
-| Markdown rendering | `react-markdown` + `remark-gfm` | GitHub-flavored table support for the discrepancy view |
+| Markdown rendering | `react-markdown` + `remark-gfm` | GitHub-flavored table support for the discrepancy view and for chat answers that compare values across documents |
 | Auth | DRF Token Authentication | Single-tenant prototype scope — see Roadmap for multi-user plans |
 
 ## Project Structure
@@ -103,9 +115,10 @@ Clarivo/
 ├── Backend-Clarivo/
 │   ├── clarivo_backend/        # Django project settings
 │   ├── accounts/                # Authentication
-│   ├── projects/                 # Project (workspace) model and endpoints
+│   ├── projects/                 # Project (workspace) model, endpoints, cross-store cleanup
 │   ├── documents/                 # Upload, background ingestion worker, embedding
 │   ├── detection/                   # Classification, retrieval, LLM reasoning, grounding checks
+│   ├── chat/                          # Ask Clarivo: history, retrieval, prompt, answering engine
 │   ├── lambda_functions/
 │   │   └── extraction/               # Containerized Lambda: PDF + OCR extraction
 │   ├── .antigravity-rules
@@ -116,8 +129,11 @@ Clarivo/
         ├── api/                       # API client configuration
         └── workspace/
             ├── FilesTab/                # File/folder upload, live ingestion status
-            └── WorkspaceTab/              # Discrepancy table, evidence, summary
+            ├── WorkspaceTab/              # Discrepancy table, evidence, summary
+            └── ChatPanel/                   # Ask Clarivo: document picker, thread, sources
 ```
+
+Inside `chat/`, the split is by responsibility rather than by Django convention: `storage.py` owns chat persistence in DynamoDB, `retrieval.py` owns question-driven hybrid search, `prompts.py` holds the system prompt, and `engine.py` assembles the four prompt inputs and calls the model. `views.py` stays thin.
 
 ## Getting Started
 
@@ -157,6 +173,7 @@ Full step-by-step environment setup (AWS resource creation, IAM permissions, Lam
 |---|---|---|
 | `/api/auth/login/` | POST | Authenticate, returns a token |
 | `/api/projects/` | GET / POST | List or create project workspaces |
+| `/api/projects/:id/` | GET / PATCH / DELETE | Fetch, rename, or delete a project — deletion also clears its S3 files, DynamoDB records and Weaviate chunks |
 | `/api/projects/:id/documents/presign/` | POST | Get a presigned S3 upload URL |
 | `/api/projects/:id/documents/confirm/` | POST | Confirm an upload, create the document record, and queue it for ingestion |
 | `/api/projects/:id/documents/` | GET | List a project's documents with status and view links; also re-queues anything left mid-pipeline by a restart |
@@ -164,6 +181,12 @@ Full step-by-step environment setup (AWS resource creation, IAM permissions, Lam
 | `/api/projects/:id/documents/:doc_id/classify/` | POST | Classify a document's type — run automatically by the worker, exposed for manual re-runs |
 | `/api/projects/:id/check/` | POST | Run detection across all eligible invoices in a project |
 | `/api/projects/:id/discrepancy-table/` | GET | Fetch the current discrepancy table and summary metrics |
+| `/api/projects/:id/documents/:doc_id/chat/` | POST | Ask a question about one document; returns the answer and the filenames it drew on |
+| `/api/projects/:id/documents/:doc_id/chat/` | GET | Replay that document's conversation, oldest first |
+| `/api/projects/:id/documents/:doc_id/chat/` | DELETE | Clear that document's conversation |
+| `/api/projects/:id/documents/:doc_id/chat/suggestions/` | GET | Three opening questions chosen from the document's stored state — no model call |
+
+Chat is plain request/response: no WebSocket, no streaming. Conversations persist in the same DynamoDB table as documents, in the same `PROJECT#<id>` partition, under a `CHAT#<doc_id>#<timestamp>` sort key. Because ISO-8601 timestamps sort in the same order as the instants they represent, a thread comes back chronologically ordered with no client-side sorting — and because the sort key prefix differs from `DOC#`, chat messages never appear in a document listing.
 
 ## Design Principles
 
@@ -171,6 +194,8 @@ Full step-by-step environment setup (AWS resource creation, IAM permissions, Lam
 - **Include everything the model can actually use.** At this project's document scale, artificially truncating retrieved context to a small top-K would risk missing the exact evidence needed to resolve a case — the entire architecture is built around giving the model full relevant context rather than a fragile guess at relevance.
 - **Automate eligibility, not just execution.** Which documents even get checked is itself an automatic classification, not a manual selection step or a second speculative judgment call — the system decides what needs checking the same way it decides what's wrong with it.
 - **Evidence over confidence.** A finding without a checkable citation is treated as less trustworthy, not more, regardless of how fluent the explanation reads.
+- **The system explains itself; it does not re-decide.** Asked why an invoice was flagged, the assistant is handed the stored verdict, findings, evidence and resolution as fact, and explains those — including which claims failed grounding verification. A chat that re-derived an answer from raw text could contradict the verdict shown one tab over, and a system that gives two different answers to the same question has no authority for either.
+- **Delete means delete.** A project's data lives in four places, and only one of them is a database Django knows about. Deletion clears the other three first and removes the Django row last, because that row is the only remaining reference to the project's id — dropping it while data is still out there would strand that data permanently.
 
 ## Roadmap
 
@@ -179,7 +204,6 @@ Deliberately out of scope for the current prototype, planned for subsequent iter
 - Live Gmail ingestion (OAuth-connected inbox watching, not just manual upload)
 - WhatsApp Business API ingestion for photographed supplier bills
 - Automated supplier correspondence — the system drafting and sending clarification emails, then parsing free-text replies
-- An interactive AI chat surface scoped to individual documents
 - Missing-invoice detection via expectation timers (catching a bill that never arrives, not just one that's wrong)
 - Multi-month price-drift detection across recurring supplier relationships
 - Multi-tenant support (the current prototype is intentionally single-user)
