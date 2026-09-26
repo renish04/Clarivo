@@ -82,11 +82,18 @@ def list_documents(project_id):
     """
     Query all document records for a given project.
 
+    The project partition holds more than documents — chat messages are
+    stored alongside them under a ``CHAT#`` sort key — so this filters
+    on the ``DOC#`` prefix rather than returning the whole partition.
+
     Returns a list of plain dicts (one per document).
     """
     response = _table.query(
-        KeyConditionExpression="PK = :pk",
-        ExpressionAttributeValues={":pk": f"PROJECT#{project_id}"},
+        KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
+        ExpressionAttributeValues={
+            ":pk": f"PROJECT#{project_id}",
+            ":sk_prefix": "DOC#",
+        },
     )
     return response.get("Items", [])
 
@@ -104,6 +111,61 @@ def get_document(project_id, doc_id):
         },
     )
     return response.get("Item")
+
+
+def get_document_filenames(project_id, doc_ids):
+    """
+    Resolve many document IDs to their filenames in one round trip.
+
+    Retrieval hands back chunks, not documents, and several chunks
+    usually come from the same file — so looking a filename up per
+    chunk would mean dozens of single-item reads for a handful of
+    distinct documents.  This de-duplicates the IDs and fetches them
+    with ``BatchGetItem`` instead.
+
+    Only the sort key and filename are projected; the document bodies
+    are large and nothing here needs them.
+
+    Parameters
+    ----------
+    project_id : int | str
+        The Django project PK.
+    doc_ids : iterable[str]
+        Document UUIDs.  Duplicates are fine and cost nothing extra.
+
+    Returns
+    -------
+    dict[str, str]
+        Mapping of doc_id to filename.  IDs with no matching record,
+        or a record with no filename, are simply absent from the map —
+        the caller decides what to show in their place.
+    """
+    unique_ids = list(dict.fromkeys(doc_ids))
+    if not unique_ids:
+        return {}
+
+    table_name = settings.DYNAMODB_TABLE_NAME
+    filenames = {}
+
+    # BatchGetItem accepts at most 100 keys per call.
+    for start in range(0, len(unique_ids), 100):
+        keys = [
+            {"PK": f"PROJECT#{project_id}", "SK": f"DOC#{doc_id}"}
+            for doc_id in unique_ids[start : start + 100]
+        ]
+        request = {table_name: {"Keys": keys, "ProjectionExpression": "SK, filename"}}
+
+        # DynamoDB may return only part of a batch under load, handing
+        # the remainder back as UnprocessedKeys to be asked for again.
+        while request:
+            response = _dynamodb.batch_get_item(RequestItems=request)
+            for item in response.get("Responses", {}).get(table_name, []):
+                filename = item.get("filename")
+                if filename:
+                    filenames[item["SK"].replace("DOC#", "")] = filename
+            request = response.get("UnprocessedKeys") or None
+
+    return filenames
 
 
 def update_document_status(project_id, doc_id, new_status):
