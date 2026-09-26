@@ -3,6 +3,37 @@ import { useParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import apiClient from '../../api/client';
+import clarivoIconUrl from '../../assets/clarivo-icon-only.png';
+
+// Message avatars.  Fixed size and never shrinking, so a long answer
+// wrapping over several lines keeps a straight left edge.
+const AVATAR_CLASS =
+  'flex-shrink-0 w-7 h-7 rounded-full border border-gray-200 bg-white flex items-center justify-center overflow-hidden';
+
+const UserAvatar = () => (
+  <div className={AVATAR_CLASS} aria-hidden="true">
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="text-gray-400"
+    >
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+  </div>
+);
+
+const ClarivoAvatar = () => (
+  <div className={AVATAR_CLASS}>
+    <img src={clarivoIconUrl} alt="Clarivo" className="w-full h-full object-contain p-0.5" />
+  </div>
+);
 
 // Same colour scheme as the Workspace tab, so a document that reads as
 // "flagged" there reads as flagged here too.
@@ -410,19 +441,21 @@ export default function ChatPanel() {
               // rather than as a chat balloon.
               if (isUser) {
                 return (
-                  <div key={message.SK} className="flex justify-end">
+                  <div key={message.SK} className="flex justify-end items-start gap-2">
                     <div className="max-w-[80%] rounded-lg px-4 py-2.5 bg-blue-50 border border-blue-100">
                       <p className="text-sm text-gray-900 whitespace-pre-wrap">
                         {message.content}
                       </p>
                     </div>
+                    <UserAvatar />
                   </div>
                 );
               }
 
               return (
-                <div key={message.SK} className="w-full">
-                  <div className="text-sm text-gray-800 space-y-2">
+                <div key={message.SK} className="w-full flex items-start gap-3">
+                  <ClarivoAvatar />
+                  <div className="flex-1 min-w-0 text-sm text-gray-800 space-y-2">
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
                       components={{
@@ -500,7 +533,10 @@ export default function ChatPanel() {
             })}
 
             {sending && (
-              <div className="w-full text-sm text-gray-500 animate-pulse">Thinking…</div>
+              <div className="w-full flex items-start gap-3">
+                <ClarivoAvatar />
+                <div className="flex-1 text-sm text-gray-500 animate-pulse">Thinking…</div>
+              </div>
             )}
 
             {chatError && (
