@@ -32,7 +32,7 @@ const STATUS_DISPLAY = {
   },
   embedding: {
     label: 'Indexing',
-    className: 'bg-blue-50 text-blue-800 border-blue-200',
+    className: 'bg-amber-50 text-amber-700 border-amber-200',
     spin: true,
   },
   embedded: {
@@ -42,7 +42,12 @@ const STATUS_DISPLAY = {
   },
   classifying: {
     label: 'Classifying',
-    className: 'bg-teal-50 text-teal-800 border-teal-200',
+    className: 'bg-amber-50 text-amber-700 border-amber-200',
+    spin: true,
+  },
+  checking: {
+    label: 'Checking',
+    className: 'bg-amber-50 text-amber-700 border-amber-200',
     spin: true,
   },
   classified: {
@@ -117,7 +122,7 @@ function Spinner() {
   );
 }
 
-export default function FilesTab() {
+export default function FilesTab({ navigateToAutomail }) {
   const { id: projectId } = useParams();
   const [documents, setDocuments] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -347,18 +352,45 @@ export default function FilesTab() {
                 return (
                   <tr key={doc.SK} className="hover:bg-gray-50 transition-colors">
                     <td className="py-4 px-6">
-                      <a
-                        href={doc.view_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-800 font-medium hover:text-blue-900 hover:underline flex items-center gap-2"
-                      >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400 flex-shrink-0">
-                          <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
-                          <polyline points="13 2 13 9 20 9"></polyline>
-                        </svg>
-                        {doc.filename}
-                      </a>
+                      {doc.file_type === 'email' ? (
+                        // An ingested email has no file to open; the place
+                        // to read it is its thread in Automail.
+                        <button
+                          onClick={() =>
+                            navigateToAutomail?.({ subTab: 'inbox', threadId: doc.source_thread_id })
+                          }
+                          className="text-blue-800 font-medium hover:text-blue-900 hover:underline flex items-center gap-2 text-left"
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400 flex-shrink-0">
+                            <rect x="2" y="4" width="20" height="16" rx="2"></rect>
+                            <path d="m22 7-10 5L2 7"></path>
+                          </svg>
+                          {doc.filename}
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium border bg-blue-50 text-blue-800 border-blue-200">
+                            Email
+                          </span>
+                        </button>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <a
+                            href={doc.view_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-800 font-medium hover:text-blue-900 hover:underline flex items-center gap-2"
+                          >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400 flex-shrink-0">
+                              <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
+                              <polyline points="13 2 13 9 20 9"></polyline>
+                            </svg>
+                            {doc.filename}
+                          </a>
+                          {doc.origin === 'email' && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium border bg-gray-50 text-gray-500 border-gray-200">
+                              via email
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </td>
                     <td className="py-4 px-6 text-gray-600">
                       {doc.doc_type ? (

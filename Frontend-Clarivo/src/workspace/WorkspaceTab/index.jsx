@@ -13,7 +13,15 @@ const getStatusBadgeClass = (status) => {
   return 'bg-gray-100 text-gray-800 border-gray-200';
 };
 
-export default function WorkspaceTab() {
+// Where an invoice's supplier conversation stands, when one is under
+// way.  Shown beside the verdict so an open case that is already being
+// chased does not look neglected.
+const FOLLOWUP_STATUS_PILLS = {
+  awaiting_reply: { label: 'Awaiting reply', className: 'bg-gray-50 text-gray-600 border-gray-200' },
+  reply_received: { label: 'Supplier replied', className: 'bg-blue-50 text-blue-800 border-blue-200' },
+};
+
+export default function WorkspaceTab({ navigateToAutomail }) {
   const { id } = useParams();
   const [isChecking, setIsChecking] = useState(false);
   const [tableMarkdown, setTableMarkdown] = useState('');
@@ -205,10 +213,33 @@ export default function WorkspaceTab() {
                         <span className={`ml-3 text-xs px-2.5 py-1 border rounded-full font-bold uppercase tracking-wider ${getStatusBadgeClass(doc.discrepancy_status)}`}>
                           {doc.discrepancy_status.replace('_', ' ')}
                         </span>
+                        {FOLLOWUP_STATUS_PILLS[doc.followup_status] && (
+                          <span className={`ml-2 text-[10px] px-2 py-0.5 border rounded-full font-medium ${FOLLOWUP_STATUS_PILLS[doc.followup_status].className}`}>
+                            {FOLLOWUP_STATUS_PILLS[doc.followup_status].label}
+                          </span>
+                        )}
                       </span>
                       <span className="text-gray-400 group-open:rotate-180 transition-transform">▼</span>
                     </summary>
                     <div className="p-4 border-t border-gray-200 space-y-4">
+                      {/* An open case is chased by email, which lives in
+                          the Automail tab -- so offer the jump from the
+                          finding that prompts it. */}
+                      {navigateToAutomail &&
+                        ["flagged", "needs_more_info"].includes(doc.discrepancy_status) && (
+                          <button
+                            onClick={() =>
+                              navigateToAutomail({
+                                subTab: 'followups',
+                                followupDocId: (doc.SK || '').replace('DOC#', ''),
+                              })
+                            }
+                            className="bg-blue-800 hover:bg-blue-900 text-white text-sm font-medium px-4 py-2 rounded shadow-sm transition-colors"
+                          >
+                            Follow up with supplier
+                          </button>
+                        )}
+
                       {doc.resolution && (
                         <div className="p-4 bg-teal-50 rounded border border-teal-200">
                           <h4 className="text-sm font-bold text-teal-800 uppercase tracking-wider mb-1">Auto Resolution</h4>
