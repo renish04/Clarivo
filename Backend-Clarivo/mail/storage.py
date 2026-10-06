@@ -4,10 +4,11 @@ DynamoDB persistence for ingested email.
 Same table and same single-table design as ``documents/dynamo.py`` and
 ``chat/storage.py``: a project's data all lives in one
 ``PROJECT#<id>`` partition, separated by sort-key prefix.  This module
-adds two more prefixes to that partition —
+adds three more prefixes to that partition —
 
     EMAIL#<gmail_message_id>      one ingested email, for the inbox UI
     CONTACT#<normalised supplier> a supplier's email address
+    DRAFT#<invoice doc id>        a follow-up draft for that invoice
 
 — alongside the existing ``DOC#`` and ``CHAT#``.
 
@@ -56,7 +57,48 @@ _table = _dynamodb.Table(settings.DYNAMODB_TABLE_NAME)
 # paths can never disagree about the layout.
 EMAIL_SK_PREFIX = "EMAIL#"
 CONTACT_SK_PREFIX = "CONTACT#"
+DRAFT_SK_PREFIX = "DRAFT#"
 THREAD_SK = "LINK"
+
+# One draft per invoice, so the sort key is the invoice's own doc id.
+# Regenerating a follow-up replaces the item rather than adding a second
+# one, and a project's drafts are a prefix scan of its own partition.
+
+# What a follow-up is asking for.  A dispute says the invoice is wrong;
+# an information request says the evidence to judge it is missing.  The
+# two need different wording, and the user needs to know which one they
+# are about to send.
+FOLLOWUP_TYPES = {"dispute", "information_request"}
+
+# Where the recipient address came from.  The first three mirror
+# SOURCE_TRUST above; "none" means no address could be resolved and the
+# user has to supply one before the draft can be sent.
+TO_SOURCES = {"manual", "email_sender", "document", "none"}
+
+DRAFT_STATUSES = {"draft", "sent"}
+
+# Every attribute a draft item may carry, as the single source of truth
+# for what update_draft is allowed to write.  A typo'd field name in a
+# caller would otherwise become a new attribute that nothing ever reads.
+DRAFT_FIELDS = {
+    "invoice_doc_id",
+    "round",
+    "followup_type",
+    "to",
+    "to_source",
+    "subject",
+    "body",
+    "status",
+    "edited",
+    "findings_hash",
+    "excluded_findings",
+    "gmail_thread_id",
+    "last_sent_gmail_id",
+    "last_sent_rfc_message_id",
+    "sent_at",
+    "created_at",
+    "updated_at",
+}
 
 # How much a source's claim about a supplier's address is worth.  A
 # human typing it in beats an address a real email actually came from,
@@ -419,3 +461,191 @@ def list_contacts(project_id):
         ),
     )
     return response.get("Items", [])
+
+
+# ---------------------------------------------------------------------------
+# Follow-up drafts
+# ---------------------------------------------------------------------------
+
+def _draft_key(project_id, doc_id):
+    return {
+        "PK": _project_pk(project_id),
+        "SK": f"{DRAFT_SK_PREFIX}{doc_id}",
+    }
+
+
+def _validate_enum(name, value, allowed):
+    if value not in allowed:
+        raise ValueError(
+            f"Invalid draft {name} {value!r}; expected one of {sorted(allowed)}"
+        )
+
+
+def put_draft(project_id, doc_id, draft):
+    """Store a follow-up draft for one invoice, replacing any earlier one.
+
+    A whole-item write, not a merge.  That is the point: generating a
+    draft again -- because the user asked, or because the findings moved
+    underneath an unedited one -- must leave no trace of the previous
+    text, and must reset ``edited`` to False.
+
+    The flip side is that a *second round* of follow-up on the same
+    thread has to carry ``gmail_thread_id`` (and the ``last_sent_*``
+    ids, if the reply should quote them) through in *draft*, or the new
+    draft will be sent as a fresh conversation instead of as a reply.
+
+    *draft* supplies the content; this function owns the identity
+    (``invoice_doc_id`` always comes from *doc_id*, never from the dict)
+    and the timestamps.  ``created_at`` is honoured if passed, so a
+    regenerated draft can keep the date the follow-up really started.
+
+    Returns the full stored item.
+    """
+    followup_type = draft.get("followup_type")
+    _validate_enum("followup_type", followup_type, FOLLOWUP_TYPES)
+
+    to_source = draft.get("to_source") or "none"
+    _validate_enum("to_source", to_source, TO_SOURCES)
+
+    status = draft.get("status") or "draft"
+    _validate_enum("status", status, DRAFT_STATUSES)
+
+    now = _now_iso()
+
+    item = {
+        **_draft_key(project_id, doc_id),
+        # Duplicated out of the sort key so a listed draft can be used
+        # without every caller having to strip the prefix off again.
+        "invoice_doc_id": doc_id,
+        "round": int(draft.get("round") or 1),
+        "followup_type": followup_type,
+        "to": (draft.get("to") or "").strip().lower(),
+        "to_source": to_source,
+        "subject": draft.get("subject") or "",
+        "body": draft.get("body") or "",
+        "status": status,
+        # True once the user has changed the text by hand.  An edited
+        # draft is never silently regenerated -- losing someone's typing
+        # to a background job is not a thing this should ever do.
+        "edited": bool(draft.get("edited", False)),
+        # The fingerprint of the findings this text was written from.
+        # Compared against the invoice's current findings to tell a
+        # stale draft from a current one.
+        "findings_hash": draft.get("findings_hash") or "",
+        # Findings deliberately left out of the email because no
+        # evidence behind them was verified.  Kept so the user can be
+        # shown what is missing from the draft, rather than wondering.
+        "excluded_findings": list(draft.get("excluded_findings") or []),
+        "gmail_thread_id": draft.get("gmail_thread_id") or "",
+        "last_sent_gmail_id": draft.get("last_sent_gmail_id") or "",
+        "last_sent_rfc_message_id": draft.get("last_sent_rfc_message_id") or "",
+        "sent_at": draft.get("sent_at") or "",
+        "created_at": draft.get("created_at") or now,
+        "updated_at": now,
+    }
+
+    _table.put_item(Item=item)
+    return item
+
+
+def get_draft(project_id, doc_id):
+    """Return the follow-up draft for one invoice, or None."""
+    response = _table.get_item(Key=_draft_key(project_id, doc_id))
+    return response.get("Item")
+
+
+def update_draft(project_id, doc_id, fields):
+    """Merge *fields* into an existing draft.
+
+    The partial counterpart to put_draft, for the changes that must not
+    disturb the rest of the item: the user editing the body, the
+    recipient being filled in, or a send recording its Gmail ids.
+
+    Unknown field names raise rather than being written, since an
+    attribute no reader knows about is indistinguishable from a silently
+    dropped update.  ``updated_at`` is always set.
+
+    Returns the full updated item, or ``None`` if there is no draft to
+    update -- which is a real case: a draft can be deleted, or the whole
+    project dropped, while someone has its editor open.
+    """
+    unknown = set(fields) - DRAFT_FIELDS
+    if unknown:
+        raise ValueError(
+            f"Unknown draft field(s) {sorted(unknown)}; expected a subset of "
+            f"{sorted(DRAFT_FIELDS)}"
+        )
+
+    if "followup_type" in fields:
+        _validate_enum("followup_type", fields["followup_type"], FOLLOWUP_TYPES)
+    if "to_source" in fields:
+        _validate_enum("to_source", fields["to_source"], TO_SOURCES)
+    if "status" in fields:
+        _validate_enum("status", fields["status"], DRAFT_STATUSES)
+
+    assignments = []
+    names = {}
+    values = {}
+
+    # Placeholder names for every field without exception: "status",
+    # "to", "round", "body" and "subject" are all DynamoDB reserved
+    # words, and the next field added might be too.
+    for index, (field, value) in enumerate(sorted(fields.items())):
+        names[f"#f{index}"] = field
+        values[f":v{index}"] = value
+        assignments.append(f"#f{index} = :v{index}")
+
+    names["#updated_at"] = "updated_at"
+    values[":now"] = _now_iso()
+    assignments.append("#updated_at = :now")
+
+    try:
+        response = _table.update_item(
+            Key=_draft_key(project_id, doc_id),
+            UpdateExpression="SET " + ", ".join(assignments),
+            # Without this, an update to a draft that is not there would
+            # create a fragment of one: no subject, no body, no round.
+            ConditionExpression="attribute_exists(SK)",
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+            ReturnValues="ALL_NEW",
+        )
+        return response.get("Attributes")
+    except _table.meta.client.exceptions.ConditionalCheckFailedException:
+        logger.info(
+            "No follow-up draft for document %s in project %s to update",
+            doc_id,
+            project_id,
+        )
+        return None
+
+
+def list_drafts(project_id):
+    """Return a project's follow-up drafts, most recently touched first.
+
+    Paginated for the same reason as list_email_records: a draft carries
+    a full email body, so enough of them exceed DynamoDB's 1 MB response
+    limit and a single-page read would quietly omit the rest.
+    """
+    items = []
+    start_key = None
+
+    while True:
+        kwargs = {
+            "KeyConditionExpression": (
+                Key("PK").eq(_project_pk(project_id))
+                & Key("SK").begins_with(DRAFT_SK_PREFIX)
+            ),
+        }
+        if start_key:
+            kwargs["ExclusiveStartKey"] = start_key
+
+        response = _table.query(**kwargs)
+        items.extend(response.get("Items", []))
+
+        start_key = response.get("LastEvaluatedKey")
+        if not start_key:
+            break
+
+    items.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
+    return items

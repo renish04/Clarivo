@@ -312,18 +312,37 @@ def update_document_status(project_id, doc_id, new_status):
     return response.get("Attributes")
 
 
-def update_document_classification(project_id, doc_id, doc_type, new_status, supplier=None):
+def update_document_classification(
+    project_id,
+    doc_id,
+    doc_type,
+    new_status,
+    supplier=None,
+    supplier_email=None,
+):
     """
-    Set the doc_type, status, and optionally supplier attributes on an existing document record.
+    Set the doc_type, status, and optionally the supplier and
+    supplier_email attributes on an existing document record.
+
+    A falsy *supplier* or *supplier_email* is left out of the update
+    rather than written as an empty value, so a classification pass that
+    could not read the issuer off a document does not wipe out what an
+    earlier pass, or the user, already knew about it.
 
     Returns the full updated item dict.
     """
+    assignments = ["#t = :doc_type", "#s = :status"]
+    expr_vals = {":doc_type": doc_type, ":status": new_status}
+
     if supplier:
-        update_expr = "SET #t = :doc_type, #s = :status, supplier = :supplier"
-        expr_vals = {":doc_type": doc_type, ":status": new_status, ":supplier": supplier}
-    else:
-        update_expr = "SET #t = :doc_type, #s = :status"
-        expr_vals = {":doc_type": doc_type, ":status": new_status}
+        assignments.append("supplier = :supplier")
+        expr_vals[":supplier"] = supplier
+
+    if supplier_email:
+        assignments.append("supplier_email = :supplier_email")
+        expr_vals[":supplier_email"] = supplier_email
+
+    update_expr = "SET " + ", ".join(assignments)
 
     response = _table.update_item(
         Key={
@@ -336,6 +355,43 @@ def update_document_classification(project_id, doc_id, doc_type, new_status, sup
         ReturnValues="ALL_NEW",
     )
     return response.get("Attributes")
+
+def update_document_supplier(project_id, doc_id, supplier=None, supplier_email=None):
+    """Set only the supplier attributes on an existing document record.
+
+    Separate from ``update_document_classification`` because backfilling
+    a supplier must not touch ``doc_type`` or ``status``: a document
+    somewhere in the ingestion pipeline would have its status rewritten
+    from under the worker that owns it.
+
+    Falsy values are skipped, as they are there.  Returns the full
+    updated item dict, or ``None`` if there was nothing to write.
+    """
+    assignments = []
+    expr_vals = {}
+
+    if supplier:
+        assignments.append("supplier = :supplier")
+        expr_vals[":supplier"] = supplier
+
+    if supplier_email:
+        assignments.append("supplier_email = :supplier_email")
+        expr_vals[":supplier_email"] = supplier_email
+
+    if not assignments:
+        return None
+
+    response = _table.update_item(
+        Key={
+            "PK": f"PROJECT#{project_id}",
+            "SK": f"DOC#{doc_id}",
+        },
+        UpdateExpression="SET " + ", ".join(assignments),
+        ExpressionAttributeValues=expr_vals,
+        ReturnValues="ALL_NEW",
+    )
+    return response.get("Attributes")
+
 
 def update_document_check_results(project_id, doc_id, discrepancy_status, findings, resolution, table_row_markdown, new_status):
     """
