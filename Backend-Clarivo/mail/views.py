@@ -25,6 +25,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from documents.dynamo import get_document, list_documents
 from projects.models import Project
 
 from .background import trigger_sync
@@ -34,7 +35,23 @@ from .gmail_client import (
     start_watch,
     stop_watch,
 )
-from .storage import get_thread_link, list_email_records
+from .followups import (
+    DraftGenerationError,
+    GmailAccountRequired,
+    OPEN_STATUSES,
+    followup_state,
+    generate_draft,
+    is_sent,
+    send_followup,
+)
+from .storage import (
+    DRAFT_FIELDS,
+    get_draft,
+    get_thread_link,
+    list_drafts,
+    list_email_records,
+    update_draft,
+)
 from .sync import sync_mailbox
 
 # How much of the latest message body goes into a thread's preview.
@@ -715,3 +732,313 @@ class MailThreadDetailView(_ProjectMailView):
             })
 
         return attachments
+
+
+# ---------------------------------------------------------------------------
+# Follow-ups
+# ---------------------------------------------------------------------------
+
+# The order the follow-up list is presented in: what needs a person's
+# attention first, what is waiting on somebody else after that, and what
+# is finished last.  Deliberately not alphabetical and not chronological
+# — the point of the list is to be worked down from the top.
+_FOLLOWUP_STATE_ORDER = {
+    state: rank
+    for rank, state in enumerate(
+        [
+            "needs_draft",
+            "reply_received",
+            "draft_stale",
+            "draft_ready",
+            "awaiting_reply",
+            "resolved",
+            "not_needed",
+        ]
+    )
+}
+
+# What a PATCH is allowed to change.  Everything else on a draft is
+# derived, or is the record of a send, and neither is the composer's to
+# rewrite.
+_EDITABLE_DRAFT_FIELDS = ("to", "subject", "body")
+
+
+def _draft_payload(draft, state):
+    """Serialise a draft item for the API.
+
+    Built from DRAFT_FIELDS rather than by copying the item, so the
+    single-table ``PK``/``SK`` never leak into a response, and a field
+    added to storage has to be added here consciously.  ``round`` is cast
+    because DynamoDB hands numbers back as Decimal.
+    """
+    payload = {field: draft.get(field) for field in DRAFT_FIELDS}
+    payload["round"] = int(draft.get("round") or 1)
+    payload["excluded_findings"] = list(draft.get("excluded_findings") or [])
+    payload["edited"] = bool(draft.get("edited"))
+    payload["followup_state"] = state
+    return payload
+
+
+class _FollowupView(_ProjectMailView):
+    """Shared loading for the per-invoice follow-up endpoints.
+
+    Ownership comes from ``_ProjectMailView``: a follow-up is about an
+    invoice in a project, so it is the project owner's and nobody else's.
+    """
+
+    def get_invoice(self, project, doc_id):
+        """The invoice document, or None."""
+        return get_document(project.pk, doc_id)
+
+    def load(self, request, project_id, doc_id):
+        """Return ``(project, invoice, draft)``, or a 404 Response.
+
+        Both a missing document and a missing draft are 404s on the same
+        URL, so the detail message is what tells them apart.
+        """
+        project = self.get_project(request, project_id)
+
+        invoice = self.get_invoice(project, doc_id)
+        if not invoice:
+            return None, Response(
+                {"detail": "No such document in this project."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return (project, invoice, get_draft(project.pk, doc_id)), None
+
+
+class FollowupListView(_ProjectMailView):
+    """
+    GET /api/projects/<project_id>/followups/
+
+    Every invoice with a follow-up to make or made: the open cases, plus
+    anything that already has a draft — including drafts whose invoice has
+    since come good, which are the ones a user wants to see have worked.
+    """
+
+    def get(self, request, project_id):
+        project = self.get_project(request, project_id)
+
+        drafts = {
+            draft.get("invoice_doc_id") or draft.get("SK", "").replace("DRAFT#", ""): draft
+            for draft in list_drafts(project.pk)
+        }
+
+        entries = []
+        for document in list_documents(project.pk):
+            doc_id = document.get("SK", "").replace("DOC#", "")
+            if not doc_id:
+                continue
+
+            draft = drafts.get(doc_id)
+            discrepancy_status = document.get("discrepancy_status") or ""
+
+            # A draft earns an invoice its place in the list whatever its
+            # verdict now is; without that, a case that resolved after a
+            # follow-up went out would vanish the moment it worked.
+            if discrepancy_status not in OPEN_STATUSES and not draft:
+                continue
+
+            entries.append({
+                "invoice_doc_id": doc_id,
+                "invoice_filename": document.get("filename") or "",
+                "supplier": document.get("supplier") or "",
+                "discrepancy_status": discrepancy_status,
+                "followup_state": followup_state(document, draft),
+                # Null rather than 1 when there is no draft: no round of
+                # this conversation has happened yet.
+                "round": int(draft.get("round") or 1) if draft else None,
+                "to": (draft.get("to") or "") if draft else "",
+                "sent_at": (draft.get("sent_at") or "") if draft else "",
+            })
+
+        # Filename breaks ties so the list does not reshuffle between two
+        # reads that found the same work outstanding.
+        entries.sort(
+            key=lambda entry: (
+                _FOLLOWUP_STATE_ORDER.get(entry["followup_state"], len(_FOLLOWUP_STATE_ORDER)),
+                (entry["invoice_filename"] or "").lower(),
+            )
+        )
+
+        return Response(entries, status=status.HTTP_200_OK)
+
+
+class FollowupDraftView(_FollowupView):
+    """
+    GET    /api/projects/<project_id>/followups/<doc_id>/draft/
+    POST   /api/projects/<project_id>/followups/<doc_id>/draft/
+    PATCH  /api/projects/<project_id>/followups/<doc_id>/draft/
+
+    Read the draft, (re)generate it, or save the user's edits to it.
+    """
+
+    def get(self, request, project_id, doc_id):
+        loaded, error = self.load(request, project_id, doc_id)
+        if error:
+            return error
+
+        _, invoice, draft = loaded
+        if not draft:
+            return Response(
+                {"detail": "No follow-up draft for this document."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response(
+            _draft_payload(draft, followup_state(invoice, draft)),
+            status=status.HTTP_200_OK,
+        )
+
+    def post(self, request, project_id, doc_id):
+        project = self.get_project(request, project_id)
+        force = bool((request.data or {}).get("force", False))
+
+        try:
+            draft = generate_draft(project.pk, doc_id, request.user, force=force)
+        except ValueError as exc:
+            # The invoice is missing, or needs no follow-up. Both are the
+            # client asking for something that does not apply, not a
+            # failure on this side.
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except DraftGenerationError as exc:
+            # 502: the request was fine, the model's answer was not.
+            # Retrying is the right response, which 400 would not suggest.
+            logger.warning("Follow-up generation failed for %s: %s", doc_id, exc)
+            return Response(
+                {"detail": "The follow-up could not be drafted. Please try again."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        invoice = get_document(project.pk, doc_id)
+        return Response(
+            _draft_payload(draft, followup_state(invoice or {}, draft)),
+            status=status.HTTP_200_OK,
+        )
+
+    def patch(self, request, project_id, doc_id):
+        loaded, error = self.load(request, project_id, doc_id)
+        if error:
+            return error
+
+        project, invoice, draft = loaded
+        if not draft:
+            return Response(
+                {"detail": "No follow-up draft for this document."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if is_sent(draft):
+            # 409 rather than 403: editing a draft is allowed, editing
+            # this one is not, because it is already with the supplier.
+            return Response(
+                {"detail": "This follow-up has already been sent and cannot be edited."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        data = request.data or {}
+        fields = {}
+
+        for field in _EDITABLE_DRAFT_FIELDS:
+            if field not in data:
+                continue
+            value = data.get(field)
+            fields[field] = ("" if value is None else str(value)).strip()
+
+        if not fields:
+            return Response(
+                {
+                    "detail": "Provide at least one of "
+                    f"{', '.join(_EDITABLE_DRAFT_FIELDS)}."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if "to" in fields:
+            fields["to"] = fields["to"].lower()
+            if fields["to"] != (draft.get("to") or ""):
+                # An address the user typed outranks anything Clarivo
+                # worked out, and send_followup reads this to decide
+                # whether to remember it as a contact.
+                fields["to_source"] = "manual"
+
+        # Marks the draft as the user's own work, which is what stops a
+        # background regeneration from overwriting it later.
+        fields["edited"] = True
+
+        updated = update_draft(project.pk, doc_id, fields)
+        if not updated:
+            # Deleted between the read above and this write.
+            return Response(
+                {"detail": "No follow-up draft for this document."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response(
+            _draft_payload(updated, followup_state(invoice, updated)),
+            status=status.HTTP_200_OK,
+        )
+
+
+class FollowupSendView(_FollowupView):
+    """
+    POST /api/projects/<project_id>/followups/<doc_id>/send/
+
+    Send the follow-up, from the user's own connected Gmail.  Nothing
+    else in Clarivo sends mail: this endpoint is the only path to it, and
+    it is only ever reached because somebody pressed send.
+    """
+
+    def post(self, request, project_id, doc_id):
+        loaded, error = self.load(request, project_id, doc_id)
+        if error:
+            return error
+
+        project, _, draft = loaded
+        if not draft:
+            return Response(
+                {"detail": "No follow-up draft for this document."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if is_sent(draft):
+            # Checked here as well as inside send_followup, so that a
+            # double-submitted form gets a 409 rather than a 400 — and so
+            # the second press cannot reach Gmail at all.
+            return Response(
+                {"detail": "This follow-up has already been sent."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        data = request.data or {}
+
+        try:
+            sent = send_followup(
+                project.pk,
+                doc_id,
+                request.user,
+                to=data.get("to"),
+                subject=data.get("subject"),
+                body=data.get("body"),
+            )
+        except GmailAccountRequired as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except GmailReconnectRequired:
+            # 409, as everywhere else here: the request was valid, the
+            # stored Google grant is not.
+            return Response(
+                {"needs_reconnect": True},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            {
+                "sent": True,
+                "gmail_thread_id": sent.get("gmail_thread_id") or "",
+                "sent_at": sent.get("sent_at") or "",
+            },
+            status=status.HTTP_200_OK,
+        )

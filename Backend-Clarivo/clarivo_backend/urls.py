@@ -25,6 +25,10 @@ urlpatterns = [
     path('api/projects/', include('projects.urls')),
     path('api/projects/<int:project_id>/documents/', include('documents.urls')),
     path('api/projects/<int:project_id>/mail/', include('mail.project_urls')),
+    path(
+        'api/projects/<int:project_id>/followups/',
+        include('mail.followup_urls'),
+    ),
     path('api/projects/<int:project_id>/', include('detection.urls')),
     path(
         'api/projects/<int:project_id>/documents/<str:doc_id>/chat/',

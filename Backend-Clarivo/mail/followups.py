@@ -19,19 +19,29 @@ whether a draft has gone out, into one word describing where the
 conversation stands. ``generate_draft`` acts on it: it writes a draft
 when one is wanted, leaves one alone when it is not, and opens a new
 round when a supplier's reply failed to settle the case.
+
+``send_followup`` puts one on the wire, from the user's own mailbox and
+only when the user asks. It is the point where everything becomes
+irreversible, so it is also where the bookkeeping that follows a send is
+written defensively.
 """
 
+import base64
 import hashlib
 import json
 import logging
 import re
+from datetime import datetime, timezone
+from email.message import EmailMessage
 
 from google import genai
 from google.genai import types
 
-from documents.dynamo import get_document, list_documents
+from documents.dynamo import get_document, list_documents, set_followup_status
 from projects.models import Project
 
+from .gmail_client import get_service
+from .models import GmailAccount
 from .prompts import FOLLOWUP_SYSTEM_PROMPT
 from .storage import (
     SOURCE_TRUST,
@@ -40,6 +50,10 @@ from .storage import (
     list_email_records,
     normalize_supplier_name,
     put_draft,
+    put_email_record,
+    put_thread_link,
+    update_draft,
+    upsert_contact,
 )
 
 logger = logging.getLogger(__name__)
@@ -141,8 +155,12 @@ def findings_fingerprint(doc_item):
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
-def _is_sent(draft):
+def is_sent(draft):
     """True if this draft has already gone out to the supplier.
+
+    Public because the API needs the same question answered before it
+    offers an edit or a send, and two implementations of "has this been
+    sent" would eventually disagree.
 
     ``sent_at`` is the field of record, but ``status`` is checked too.
     The two are written in the same call, so disagreement means a partial
@@ -200,7 +218,7 @@ def followup_state(doc_item, draft):
     is cached, so it corrects itself as soon as detection writes one.
     """
     status = _text(doc_item.get("discrepancy_status"))
-    sent = _is_sent(draft)
+    sent = is_sent(draft)
 
     if not sent and status in SETTLED_STATUSES:
         return "not_needed"
@@ -384,14 +402,16 @@ def _resolve_recipient(project_id, doc_item):
     return "", "none"
 
 
-def _latest_inbound_reply(project_id, thread_id):
+def _latest_inbound_record(project_id, thread_id):
     """The supplier's most recent message on this follow-up's thread.
 
-    Inbound only: the thread also holds what Clarivo sent, and quoting
-    our own last email back to the model would have it answer itself.
+    Inbound only, and for two different reasons. Quoting our own last
+    email back to the model would have it answer itself; and threading a
+    new round onto our own previous message, rather than onto their
+    reply, puts it in the wrong place in the conversation.
     """
     if not thread_id:
-        return ""
+        return None
 
     # list_email_records returns newest first, by received_at.
     for record in list_email_records(project_id):
@@ -400,9 +420,18 @@ def _latest_inbound_reply(project_id, thread_id):
         if record.get("direction") != "inbound":
             continue
 
-        return _text(record.get("body_text"))[:REPLY_EXCERPT_CHARS]
+        return record
 
-    return ""
+    return None
+
+
+def _latest_inbound_reply(project_id, thread_id):
+    """The text of that message, trimmed to what a prompt needs."""
+    record = _latest_inbound_record(project_id, thread_id)
+    if not record:
+        return ""
+
+    return _text(record.get("body_text"))[:REPLY_EXCERPT_CHARS]
 
 
 def _build_user_message(
@@ -541,7 +570,7 @@ def generate_draft(project_id, doc_id, user, force=False):
         created_at = _text(existing.get("created_at"))
         previous_subject = existing.get("subject") or ""
 
-        if _is_sent(existing):
+        if is_sent(existing):
             if state != "reply_received":
                 logger.info(
                     "Follow-up for invoice %s in project %s is already sent and "
@@ -666,3 +695,279 @@ def generate_draft(project_id, doc_id, user, force=False):
         to_source,
     )
     return draft
+
+
+class GmailAccountRequired(RuntimeError):
+    """There is no connected Gmail account to send this follow-up from.
+
+    Distinct from GmailReconnectRequired, which means an account exists
+    but its grant has lapsed. This one means the user never connected
+    one, so the fix is the initial OAuth flow rather than a reconnect.
+    """
+
+
+# Simple on purpose. A send either reaches the supplier or bounces, and
+# Gmail is a better judge of an address than a regex is; this only has to
+# stop an obvious typo from being sent.
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+# Written on an outbound EMAIL# record in place of a routing rule. Mail
+# Clarivo sent was not routed anywhere -- it already knows which project
+# and which invoice it belongs to.
+SENT_ROUTE_REASON = "sent_by_clarivo"
+
+
+def _message_id_of(service, gmail_message_id):
+    """Read back the RFC Message-ID Gmail assigned to a sent message.
+
+    Gmail generates this itself at send time and does not return it from
+    ``send``, so it takes a second call to find out. It matters because
+    it is the value the supplier's mail server will quote in
+    ``In-Reply-To`` when they answer, and therefore what a later round
+    threads onto.
+
+    Returns "" if the read fails. A missing Message-ID costs correct
+    threading on round three; it is not worth failing a send that has
+    already gone out.
+    """
+    try:
+        message = (
+            service.users()
+            .messages()
+            .get(
+                userId="me",
+                id=gmail_message_id,
+                format="metadata",
+                metadataHeaders=["Message-ID"],
+            )
+            .execute()
+        )
+    except Exception:
+        logger.exception(
+            "Could not read the Message-ID of sent message %s", gmail_message_id
+        )
+        return ""
+
+    for header in (message.get("payload") or {}).get("headers") or []:
+        if (header.get("name") or "").strip().lower() == "message-id":
+            return _text(header.get("value"))
+
+    return ""
+
+
+def send_followup(project_id, doc_id, user, to, subject, body):
+    """Send the follow-up for one invoice from the user's own Gmail.
+
+    Always an explicit user action. Nothing in Clarivo calls this on a
+    timer or off the back of an ingest: mail going to a supplier under
+    someone's own name is theirs to send.
+
+    *to*, *subject* and *body* are what the user is looking at, which may
+    not be what the draft holds -- they can edit any of the three in the
+    composer -- so the sent values are what gets stored.
+
+    Everything after the Gmail call is bookkeeping, and every piece of it
+    is best-effort: once a message is with the supplier it cannot be
+    recalled, so a failure to write a record is logged and stepped over
+    rather than raised. Raising would tell the user the send failed, and
+    the next thing they would do is send it again.
+
+    Returns the updated draft item.
+
+    Raises
+    ------
+    ValueError
+        A malformed recipient, an empty body, or no draft to send. All of
+        these are the caller's 400.
+    GmailAccountRequired
+        The user has no Gmail account connected.
+    GmailReconnectRequired
+        Raised through from get_service: the grant has lapsed.
+    """
+    recipient = _text(to).lower()
+    if not _EMAIL_RE.match(recipient):
+        raise ValueError(f"{to!r} is not a valid email address")
+
+    sent_body = (body or "").strip()
+    if not sent_body:
+        raise ValueError("cannot send a follow-up with an empty body")
+
+    draft = get_draft(project_id, doc_id)
+    if not draft:
+        raise ValueError(f"no follow-up draft for document {doc_id} to send")
+
+    if is_sent(draft):
+        # The draft item is reused across rounds, and generate_draft
+        # clears the sent fields when it opens a new one. So a draft that
+        # still reads as sent means this exact message has already gone
+        # -- a double-submitted form, or a retried request -- and sending
+        # it again would put two identical emails in front of a supplier.
+        raise ValueError(
+            f"the round-{int(draft.get('round') or 1)} follow-up for document "
+            f"{doc_id} has already been sent"
+        )
+
+    sent_subject = _text(subject) or _text(draft.get("subject"))
+    if not sent_subject:
+        raise ValueError("cannot send a follow-up with no subject")
+
+    account = GmailAccount.objects.filter(user=user).first()
+    if not account:
+        raise GmailAccountRequired(
+            "Connect a Gmail account before sending a follow-up."
+        )
+
+    thread_id = _text(draft.get("gmail_thread_id"))
+
+    message = EmailMessage()
+    message["From"] = account.email
+    message["To"] = recipient
+    message["Subject"] = sent_subject
+    message.set_content(sent_body)
+
+    if thread_id:
+        # Reply to their last message if they have sent one, otherwise to
+        # our own previous round. Threading onto the newest message in
+        # the conversation is what keeps a mail client from showing this
+        # as a reply to something two messages back.
+        inbound = _latest_inbound_record(project_id, thread_id)
+        reply_to = _text(inbound.get("rfc_message_id")) if inbound else ""
+        reply_to = reply_to or _text(draft.get("last_sent_rfc_message_id"))
+
+        if reply_to:
+            message["In-Reply-To"] = reply_to
+            message["References"] = reply_to
+
+    service = get_service(account)
+
+    request_body = {"raw": base64.urlsafe_b64encode(message.as_bytes()).decode()}
+    if thread_id:
+        request_body["threadId"] = thread_id
+
+    sent = service.users().messages().send(userId="me", body=request_body).execute()
+
+    # -- Past this line the email is with the supplier --------------------
+    gmail_message_id = _text(sent.get("id"))
+    thread_id = _text(sent.get("threadId")) or thread_id
+    sent_at = datetime.now(timezone.utc).isoformat()
+
+    logger.info(
+        "Sent follow-up round %s for invoice %s (project %s) to %s as %s on "
+        "thread %s",
+        draft.get("round"),
+        doc_id,
+        project_id,
+        recipient,
+        gmail_message_id,
+        thread_id,
+    )
+
+    rfc_message_id = _message_id_of(service, gmail_message_id)
+
+    sent_fields = {
+        "status": "sent",
+        "to": recipient,
+        "subject": sent_subject,
+        "body": sent_body,
+        "gmail_thread_id": thread_id,
+        "last_sent_gmail_id": gmail_message_id,
+        "last_sent_rfc_message_id": rfc_message_id,
+        "sent_at": sent_at,
+    }
+
+    updated = None
+    try:
+        updated = update_draft(project_id, doc_id, sent_fields)
+    except Exception:
+        # The one failure here that actually costs something: a draft
+        # still reading "draft" is a draft the UI will offer to send
+        # again. Logged loudly, and the returned item says "sent" either
+        # way so the caller does not show a send button.
+        logger.exception(
+            "Sent follow-up %s for invoice %s but could not record it on the "
+            "draft",
+            gmail_message_id,
+            doc_id,
+        )
+
+    try:
+        # Routing rule (1). Without this the supplier's reply has nothing
+        # tying it to this invoice, and lands wherever the subject and
+        # sender rules put it -- which for a reply is nowhere useful.
+        put_thread_link(account.email, thread_id, project_id, invoice_doc_id=doc_id)
+    except Exception:
+        logger.exception(
+            "Sent follow-up %s but could not link thread %s to invoice %s",
+            gmail_message_id,
+            thread_id,
+            doc_id,
+        )
+
+    try:
+        # The Inbox view reads EMAIL# records, so without this the thread
+        # shows the supplier's side of the conversation and not ours.
+        #
+        # Deliberately no correspondence document and no embedding. A
+        # correspondence document becomes retrievable project context,
+        # which would put our own wording in front of the detector --
+        # and the grounding check verifies a claim by finding it in the
+        # context, so a claim we wrote would verify itself. The whole
+        # evidence gate depends on the context holding only documents
+        # somebody else produced.
+        put_email_record(
+            project_id,
+            {
+                "gmail_message_id": gmail_message_id,
+                "thread_id": thread_id,
+                "direction": "outbound",
+                "from_name": _buyer_name(user),
+                "from_email": (account.email or "").strip().lower(),
+                "to": recipient,
+                "subject": sent_subject,
+                "received_at": sent_at,
+                "body_text": sent_body,
+                "rfc_message_id": rfc_message_id,
+                "route_reason": SENT_ROUTE_REASON,
+            },
+        )
+    except Exception:
+        logger.exception(
+            "Sent follow-up %s but could not store its email record",
+            gmail_message_id,
+        )
+
+    try:
+        set_followup_status(project_id, doc_id, "awaiting_reply")
+    except Exception:
+        logger.exception(
+            "Sent follow-up %s but could not set the follow-up status on "
+            "invoice %s",
+            gmail_message_id,
+            doc_id,
+        )
+
+    # -- Learn the address, if the user supplied it ----------------------
+    # A recipient the user typed or corrected is the best information
+    # there is about where this supplier reads mail -- better than an
+    # address scraped off a PDF, and better than one learned from a
+    # sender. "manual" outranks both, so this sticks.
+    # "manual" counts as well as a mismatch: a user who corrected the
+    # recipient in the composer saved it onto the draft first, so by the
+    # time it is sent the typed address and the stored one agree, and a
+    # mismatch test on its own would never fire.
+    if (
+        recipient != _text(draft.get("to")).lower()
+        or draft.get("to_source") in ("none", "manual")
+    ):
+        supplier = _text((get_document(project_id, doc_id) or {}).get("supplier"))
+        if supplier:
+            try:
+                upsert_contact(project_id, supplier, recipient, source="manual")
+            except Exception:
+                logger.exception(
+                    "Could not store the manually entered contact %s for %r",
+                    recipient,
+                    supplier,
+                )
+
+    return updated or {**draft, **sent_fields}
