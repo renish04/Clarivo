@@ -12,6 +12,20 @@ import {
 // a sync ingests in the background shows up without a click.
 const THREAD_POLL_INTERVAL_MS = 30000;
 
+// While an attachment in the open thread is still being processed, the
+// thread is re-read this often so its status pill moves on by itself —
+// the same cadence the Files tab polls at.
+const ATTACHMENT_POLL_INTERVAL_MS = 3000;
+
+const PROCESSING_ATTACHMENT_STATUSES = [
+  'pending_extraction',
+  'extracted',
+  'embedding',
+  'embedded',
+  'classifying',
+  'checking',
+];
+
 function PaperclipIcon({ className = '' }) {
   return (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-label="Has attachments">
@@ -34,26 +48,37 @@ function AttachmentChip({ attachment }) {
   const display = describeAttachmentStatus(attachment.status);
   const label = attachment.filename || 'Attachment';
 
-  return (
-    <span className="inline-flex items-center gap-2 pl-2.5 pr-1.5 py-1 rounded-md border border-gray-200 bg-white text-xs">
-      <PaperclipIcon className="text-gray-400 flex-shrink-0" />
-      <span className="text-gray-800 font-medium truncate max-w-[14rem]" title={label}>
-        {label}
-      </span>
-      <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium border ${display.className}`}>
-        {display.label}
-      </span>
-      {attachment.view_url && (
-        <a
-          href={attachment.view_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="px-1.5 text-blue-800 hover:underline font-medium"
-        >
-          Open
-        </a>
-      )}
+  const pill = (
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium border ${display.className}`}>
+      {display.label}
     </span>
+  );
+
+  // With a view_url the whole chip opens the file from S3 in a new tab,
+  // the same presigned link the Files tab opens a document with.  A
+  // missing document has none, and is shown but not clickable.
+  if (!attachment.view_url) {
+    return (
+      <span className="inline-flex items-center gap-2 px-2.5 py-1 rounded-md border border-gray-200 bg-gray-50 text-xs text-gray-500">
+        <PaperclipIcon className="text-gray-400 flex-shrink-0" />
+        <span className="truncate max-w-[14rem]" title={label}>{label}</span>
+        {pill}
+      </span>
+    );
+  }
+
+  return (
+    <a
+      href={attachment.view_url}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={`Open ${label}`}
+      className="inline-flex items-center gap-2 px-2.5 py-1 rounded-md border border-gray-200 bg-white text-xs hover:bg-gray-50 hover:border-gray-300 transition-colors"
+    >
+      <PaperclipIcon className="text-gray-400 flex-shrink-0" />
+      <span className="text-blue-800 font-medium truncate max-w-[14rem] hover:underline">{label}</span>
+      {pill}
+    </a>
   );
 }
 
@@ -119,6 +144,21 @@ export default function InboxView({ initialThreadId, refreshKey, accountEmail, o
   // reply arriving during a poll appears without reselecting the thread.
   const selectedMessageCount = selectedThread?.message_count;
 
+  // Bumped while an attachment is still processing, to re-read the
+  // thread until every pill has settled.
+  const [attachmentTick, setAttachmentTick] = useState(0);
+  const attachmentsProcessing = messages.some((message) =>
+    (message.attachments || []).some((attachment) =>
+      PROCESSING_ATTACHMENT_STATUSES.includes(attachment.status)
+    )
+  );
+
+  useEffect(() => {
+    if (!attachmentsProcessing) return undefined;
+    const timer = setInterval(() => setAttachmentTick((tick) => tick + 1), ATTACHMENT_POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [attachmentsProcessing]);
+
   useEffect(() => {
     if (!selectedThreadId) {
       setMessages([]);
@@ -148,7 +188,7 @@ export default function InboxView({ initialThreadId, refreshKey, accountEmail, o
     return () => {
       cancelled = true;
     };
-  }, [projectId, selectedThreadId, selectedMessageCount]);
+  }, [projectId, selectedThreadId, selectedMessageCount, attachmentTick]);
 
   if (loading) {
     return <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">Loading mail…</div>;

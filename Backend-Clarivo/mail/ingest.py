@@ -400,6 +400,15 @@ def _ingest_attachment(
         len(file_bytes),
         doc_id,
     )
+
+    # From here on an emailed file is treated exactly like one dropped
+    # into the Files tab: the confirm endpoint does confirm_document +
+    # enqueue_document, and so does this.  The ingestion worker waits
+    # for the Lambda's extraction, then embeds and classifies.  Imported
+    # here, as the confirm view does, to keep import order loose.
+    from documents.pipeline import enqueue_document
+
+    enqueue_document(project_id, doc_id)
     return doc_id
 
 

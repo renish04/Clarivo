@@ -46,9 +46,23 @@ from .sync import sync_mailbox
 
 logger = logging.getLogger(__name__)
 
-# How long to wait for the extraction Lambda to read an attachment.
-EXTRACTION_TIMEOUT_SECONDS = 120
+# How long to wait for emailed attachments to finish the ingestion
+# pipeline — extraction by the Lambda, then embedding and classification
+# by the ingestion worker — before detection runs without them.
+EXTRACTION_TIMEOUT_SECONDS = 300
 EXTRACTION_POLL_SECONDS = 5
+
+# Statuses an attachment passes through on its way to ``classified``.
+# Detection waits while any emailed attachment is in one, so an invoice
+# is never judged a moment before the evidence that came with the email
+# is in the index.
+IN_FLIGHT_STATUSES = {
+    "pending_extraction",
+    "extracted",
+    "embedding",
+    "embedded",
+    "classifying",
+}
 
 # Per-account worker state, keyed by GmailAccount pk:
 #   lock             -- held for the whole duration of a worker run
@@ -191,7 +205,7 @@ def _process_project(project_id):
 
     if pending_attachments:
         logger.info(
-            "Waiting for extraction of %d emailed attachment(s) in project %s",
+            "Waiting for %d emailed attachment(s) in project %s to be ingested",
             len(pending_attachments),
             project_id,
         )
@@ -214,7 +228,7 @@ def _process_project(project_id):
 
 
 def _pending_email_attachments(project_id):
-    """Doc ids of email-sourced documents still awaiting extraction.
+    """Doc ids of email-sourced documents still moving through ingestion.
 
     Read from DynamoDB rather than passed in from the sync, so that an
     attachment left behind by an earlier run — a restart mid-wait, a
@@ -225,17 +239,18 @@ def _pending_email_attachments(project_id):
         doc.get("SK", "").replace("DOC#", "")
         for doc in list_documents(project_id)
         if doc.get("origin") == "email"
-        and doc.get("status") == "pending_extraction"
+        and doc.get("status") in IN_FLIGHT_STATUSES
         and doc.get("SK")
     ]
 
 
 def _wait_for_extraction(project_id, doc_ids):
-    """Poll until no document is at ``pending_extraction``, or we time out.
+    """Poll until none of *doc_ids* is still in flight, or we time out.
 
-    The extraction Lambda cannot call back into Django — it is not
-    reachable from AWS in development — so polling the record is how we
-    observe it finishing.
+    The ingestion worker owns each attachment from upload to
+    ``classified``, just as it does an upload from the Files tab; this
+    only watches.  Polling the record is the only way to observe it —
+    the extraction Lambda cannot call back into Django.
 
     Returns ``True`` if everything was extracted in time.
     """
@@ -246,7 +261,7 @@ def _wait_for_extraction(project_id, doc_ids):
         still_waiting = set()
         for doc_id in waiting:
             doc = get_document(project_id, doc_id)
-            if doc and doc.get("status") == "pending_extraction":
+            if doc and doc.get("status") in IN_FLIGHT_STATUSES:
                 still_waiting.add(doc_id)
         waiting = still_waiting
 
@@ -258,7 +273,7 @@ def _wait_for_extraction(project_id, doc_ids):
         time.sleep(EXTRACTION_POLL_SECONDS)
 
     logger.warning(
-        "Gave up waiting for extraction of %d document(s) in project %s",
+        "Gave up waiting for ingestion of %d document(s) in project %s",
         len(waiting),
         project_id,
     )

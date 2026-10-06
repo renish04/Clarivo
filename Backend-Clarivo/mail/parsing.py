@@ -161,17 +161,28 @@ def _describe_attachment(part, headers, mime_type, body):
     """Build the attachment record for one MIME part."""
     disposition = headers.get("content-disposition", "").strip().lower()
 
+    # An inline part is an image embedded in the HTML body — in practice
+    # almost always a logo in a signature block.  Flagged rather than
+    # dropped here so the caller decides.
+    #
+    # Only images qualify, and only when not explicitly attached.  A
+    # Content-ID alone proves nothing: Gmail puts one on *every*
+    # attachment, so treating it as "inline" silently discarded every
+    # PDF and photo a supplier sent from Gmail.  And a PDF is never a
+    # signature logo, whatever its headers say — Apple Mail marks
+    # ordinary attachments "inline".
+    is_inline = (
+        mime_type.startswith("image/")
+        and not disposition.startswith("attachment")
+        and (bool(headers.get("content-id")) or disposition.startswith("inline"))
+    )
+
     return {
         "filename": part.get("filename") or "",
         "mime_type": mime_type,
         "attachment_id": body.get("attachmentId") or "",
         "size": body.get("size") or 0,
-        # An inline part is referenced from the HTML body by its
-        # Content-ID rather than being offered to the reader as a file —
-        # in practice almost always a logo in a signature block.  Flagged
-        # rather than dropped here so the caller decides.
-        "is_inline": bool(headers.get("content-id"))
-        or disposition.startswith("inline"),
+        "is_inline": is_inline,
     }
 
 
