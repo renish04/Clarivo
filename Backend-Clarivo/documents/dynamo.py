@@ -292,3 +292,47 @@ def reset_document_check_results(project_id, doc_id):
         ReturnValues="ALL_NEW",
     )
     return response.get("Attributes")
+
+
+def claim_document_status(project_id, doc_id, expected_status, new_status):
+    """
+    Atomically move a document from one status to another.
+
+    This is the lock that lets several callers work the same project at
+    once.  Embedding and classification are now triggered from three
+    places — the Files tab endpoints, the background ingestion worker,
+    and the email sync's ``process_pending`` sweep — and a plain
+    "read the status, decide, then write" would let two of them read
+    ``extracted`` in the same instant and both go on to embed the same
+    document, inserting its chunks into Weaviate twice.
+
+    DynamoDB evaluates the ``ConditionExpression`` and the write as one
+    operation, so exactly one caller can make a given transition.  The
+    losers find out by being told ``False`` and simply leave the
+    document alone.
+
+    Returns
+    -------
+    bool
+        ``True`` if this caller made the transition (and now owns the
+        document), ``False`` if the document was not in
+        *expected_status* — because someone else claimed it first, or
+        because it has already moved further along the pipeline.
+    """
+    try:
+        _table.update_item(
+            Key={
+                "PK": f"PROJECT#{project_id}",
+                "SK": f"DOC#{doc_id}",
+            },
+            UpdateExpression="SET #s = :new_status",
+            ConditionExpression="#s = :expected_status",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":new_status": new_status,
+                ":expected_status": expected_status,
+            },
+        )
+        return True
+    except _table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False

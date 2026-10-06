@@ -30,6 +30,8 @@ SECRET_KEY = 'django-insecure-z)-l(00_@s%p(%d_w0uu@$z)a^fh8c@g0afe=0ksi%@y%u=#7%
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
+# Extended further down with PUBLIC_HOSTNAME, so the Gmail push webhook
+# can be reached through an ngrok tunnel.
 ALLOWED_HOSTS = []
 
 
@@ -52,6 +54,7 @@ INSTALLED_APPS = [
     'documents',
     'detection',
     'chat',
+    'mail',
 ]
 
 MIDDLEWARE = [
@@ -165,3 +168,43 @@ DYNAMODB_TABLE_NAME = os.environ.get('DYNAMODB_TABLE_NAME', '')
 # ---------------------------------------------------------------------------
 WEAVIATE_URL = os.environ.get('WEAVIATE_URL', '')
 WEAVIATE_API_KEY = os.environ.get('WEAVIATE_API_KEY', '')
+
+
+# ---------------------------------------------------------------------------
+# Google OAuth / Gmail — loaded from .env
+# ---------------------------------------------------------------------------
+GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
+GOOGLE_CLIENT_SECRET = os.environ.get('GOOGLE_CLIENT_SECRET', '')
+GOOGLE_OAUTH_REDIRECT_URI = os.environ.get('GOOGLE_OAUTH_REDIRECT_URI', '')
+
+# Fully-qualified Pub/Sub topic that users.watch publishes change
+# notifications to, e.g. 'projects/<gcp-project>/topics/clarivo-gmail'.
+GMAIL_PUBSUB_TOPIC = os.environ.get('GMAIL_PUBSUB_TOPIC', '')
+
+# True  -> Gmail pushes to our webhook via Pub/Sub (needs a public hostname).
+# False -> the frontend polls the sync endpoint instead.
+GMAIL_PUSH_ENABLED = os.environ.get('GMAIL_PUSH_ENABLED', 'False').lower() in (
+    'true', '1', 'yes',
+)
+
+# Shared secret echoed back in the push subscription's URL, so the webhook
+# can tell a real Pub/Sub delivery from anyone who guesses the path.
+GMAIL_PUSH_SECRET = os.environ.get('GMAIL_PUSH_SECRET', '')
+
+# Fernet key used to encrypt stored OAuth refresh tokens at rest.
+FIELD_ENCRYPTION_KEY = os.environ.get('FIELD_ENCRYPTION_KEY', '')
+
+# Where to send the browser back to once the OAuth consent screen is done.
+FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:5173')
+
+# The externally reachable hostname of this backend (an ngrok domain in
+# development).  Google's Pub/Sub push arrives with that hostname in the Host
+# header, and Django answers an unlisted Host with a flat 400 before the view
+# ever runs — so the tunnel domain has to be allowed explicitly.
+PUBLIC_HOSTNAME = os.environ.get('PUBLIC_HOSTNAME', '')
+
+if PUBLIC_HOSTNAME:
+    # Adding anything at all to ALLOWED_HOSTS switches off the implicit
+    # localhost allowance Django grants while DEBUG is on, so the local
+    # development hosts have to be re-listed alongside the tunnel.
+    ALLOWED_HOSTS += ['localhost', '127.0.0.1', '[::1]', PUBLIC_HOSTNAME]

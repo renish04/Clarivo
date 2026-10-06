@@ -140,9 +140,8 @@ def _process_document(project_id, doc_id):
     Each stage is skipped if a previous run already completed it, so a
     resumed document does not get embedded twice.
     """
-    from detection.classify import classify_document
     from documents.dynamo import get_document, update_document_status
-    from documents.weaviate_client import embed_document
+    from documents.services import classify_and_mark, embed_and_mark
 
     doc = get_document(project_id, doc_id)
     if doc is None:
@@ -168,26 +167,28 @@ def _process_document(project_id, doc_id):
         return
 
     # -- Stage 2: chunk + embed into Weaviate -------------------------
+    # Both remaining stages go through documents.services, which claims
+    # the document with a conditional status update first.  That is what
+    # keeps this worker from colliding with an email sync's
+    # process_pending sweep, or with the Files tab endpoints, over a
+    # document all three can see.  The in-flight set above only guards
+    # this worker against itself.
     if status not in ("embedded", "classifying"):
-        update_document_status(project_id, doc_id, "embedding")
         try:
-            embed_document(
-                project_id=str(project_id),
-                doc_id=doc_id,
-                body_text=body,
-            )
+            embed_and_mark(project_id, doc_id)
         except Exception:
             logger.exception("Embedding failed for document %s", doc_id)
+            # embed_and_mark has already reverted the status to
+            # 'extracted'; overwrite that with the terminal failure the
+            # Files tab knows how to display.
             update_document_status(project_id, doc_id, "failed_embedding")
             return
-        update_document_status(project_id, doc_id, "embedded")
 
     # -- Stage 3: classify --------------------------------------------
-    update_document_status(project_id, doc_id, "classifying")
+    # classify_and_mark calls classify_document, which writes doc_type,
+    # supplier and the 'classified' status itself.
     try:
-        # classify_document writes doc_type, supplier and the
-        # 'classified' status itself.
-        classify_document(project_id, doc_id)
+        classify_and_mark(project_id, doc_id)
     except Exception:
         logger.exception("Classification failed for document %s", doc_id)
         update_document_status(project_id, doc_id, "failed_classification")
