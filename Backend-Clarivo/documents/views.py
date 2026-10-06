@@ -162,13 +162,24 @@ class DocumentListView(APIView):
         )
 
         for item in items:
-            item["view_url"] = s3_client.generate_presigned_url(
-                "get_object",
-                Params={
-                    "Bucket": settings.S3_BUCKET_NAME,
-                    "Key": item["s3_key"],
-                },
-                ExpiresIn=600,  # 10 minutes
+            # Not every document is a file.  A correspondence record is
+            # the text of an ingested email: it has a body but no object
+            # in the bucket, so there is nothing to presign and no
+            # ``s3_key`` to presign it from.  Asking for one unguarded
+            # would raise a KeyError and take the whole Files tab down
+            # for any project that has ever ingested an email.
+            s3_key = item.get("s3_key")
+            item["view_url"] = (
+                s3_client.generate_presigned_url(
+                    "get_object",
+                    Params={
+                        "Bucket": settings.S3_BUCKET_NAME,
+                        "Key": s3_key,
+                    },
+                    ExpiresIn=600,  # 10 minutes
+                )
+                if s3_key
+                else None
             )
 
         return Response(items, status=status.HTTP_200_OK)

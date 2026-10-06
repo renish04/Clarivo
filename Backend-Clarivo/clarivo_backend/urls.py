@@ -24,6 +24,7 @@ urlpatterns = [
     path('api/gmail/', include('mail.urls')),
     path('api/projects/', include('projects.urls')),
     path('api/projects/<int:project_id>/documents/', include('documents.urls')),
+    path('api/projects/<int:project_id>/mail/', include('mail.project_urls')),
     path('api/projects/<int:project_id>/', include('detection.urls')),
     path(
         'api/projects/<int:project_id>/documents/<str:doc_id>/chat/',

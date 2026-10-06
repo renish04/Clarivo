@@ -4,7 +4,9 @@ from .views import (
     GmailDisconnectView,
     GmailOAuthCallbackView,
     GmailOAuthStartView,
+    GmailPushView,
     GmailStatusView,
+    GmailSyncNowView,
 )
 
 urlpatterns = [
@@ -18,5 +20,9 @@ urlpatterns = [
         name="gmail-oauth-callback",
     ),
     path("status/", GmailStatusView.as_view(), name="gmail-status"),
+    # The Pub/Sub push subscription posts here, with ?token=<secret>
+    # appended to the endpoint URL configured in Google Cloud.
+    path("push/", GmailPushView.as_view(), name="gmail-push"),
+    path("sync/", GmailSyncNowView.as_view(), name="gmail-sync"),
     path("disconnect/", GmailDisconnectView.as_view(), name="gmail-disconnect"),
 ]

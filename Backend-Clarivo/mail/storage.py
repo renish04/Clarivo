@@ -146,6 +146,70 @@ def put_email_record(project_id, record):
         return False
 
 
+def update_email_doc_ids(
+    project_id,
+    gmail_message_id,
+    attachment_doc_ids=None,
+    correspondence_doc_id=None,
+):
+    """Attach the created document ids to an already-stored email record.
+
+    The email record is written *first* during ingestion, before any
+    document exists, because that conditional write is what claims the
+    message and stops a duplicate delivery being processed twice.  The
+    document ids are therefore only known afterwards, and are filled in
+    here.
+
+    Only the arguments actually supplied are written, so a later call
+    cannot blank out ids an earlier one set.
+
+    Returns the full updated item, or ``None`` if nothing was supplied.
+    """
+    set_clauses = []
+    values = {}
+
+    if attachment_doc_ids is not None:
+        set_clauses.append("attachment_doc_ids = :attachment_doc_ids")
+        values[":attachment_doc_ids"] = attachment_doc_ids
+
+    if correspondence_doc_id is not None:
+        set_clauses.append("correspondence_doc_id = :correspondence_doc_id")
+        values[":correspondence_doc_id"] = correspondence_doc_id
+
+    if not set_clauses:
+        return None
+
+    response = _table.update_item(
+        Key={
+            "PK": _project_pk(project_id),
+            "SK": f"{EMAIL_SK_PREFIX}{gmail_message_id}",
+        },
+        UpdateExpression="SET " + ", ".join(set_clauses),
+        ExpressionAttributeValues=values,
+        ReturnValues="ALL_NEW",
+    )
+    return response.get("Attributes")
+
+
+def find_contact_by_email(project_id, email):
+    """Return the contact record in *project_id* whose address is *email*.
+
+    Used when an email arrives from an address already recorded as a
+    supplier contact: the contact carries the supplier name, which is
+    what identifies whose invoices the email is evidence about.
+
+    Returns the contact item, or ``None``.
+    """
+    wanted = (email or "").strip().lower()
+    if not wanted:
+        return None
+
+    for contact in list_contacts(project_id):
+        if (contact.get("email") or "").strip().lower() == wanted:
+            return contact
+    return None
+
+
 def list_email_records(project_id):
     """Return a project's ingested emails, newest first.
 

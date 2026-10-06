@@ -21,7 +21,7 @@ _dynamodb = boto3.resource(
 _table = _dynamodb.Table(settings.DYNAMODB_TABLE_NAME)
 
 
-def confirm_document(project_id, doc_id, filename, s3_key, file_type):
+def confirm_document(project_id, doc_id, filename, s3_key, file_type, extra=None):
     """
     Record the metadata for a freshly uploaded document.
 
@@ -49,30 +49,115 @@ def confirm_document(project_id, doc_id, filename, s3_key, file_type):
         ``projects/<project_id>/documents/<doc_id>/<filename>``.
     file_type : str
         MIME type or extension (e.g. ``application/pdf``).
+    extra : dict | None
+        Additional attributes to set on the record.  Used by email
+        ingestion to record where an attachment came from
+        (``source_email_id``, ``source_thread_id``, ``origin``,
+        ``sender_email``).  Attribute names here must not collide with
+        the ones written above.
 
     Returns
     -------
     dict
         The full updated item.
     """
+    set_clauses = [
+        "filename = :filename",
+        "s3_key = :s3_key",
+        "file_type = :file_type",
+        "uploaded_at = :uploaded_at",
+        "#s = if_not_exists(#s, :pending)",
+    ]
+    values = {
+        ":filename": filename,
+        ":s3_key": s3_key,
+        ":file_type": file_type,
+        ":uploaded_at": datetime.now(timezone.utc).isoformat(),
+        ":pending": "pending_extraction",
+    }
+    names = {"#s": "status"}
+
+    for index, (key, value) in enumerate(sorted((extra or {}).items())):
+        # Placeholders for the names too: an attribute like "origin" is
+        # fine, but there is no reason for a caller to have to know which
+        # words DynamoDB reserves.
+        name_placeholder = f"#e{index}"
+        value_placeholder = f":e{index}"
+        set_clauses.append(f"{name_placeholder} = {value_placeholder}")
+        names[name_placeholder] = key
+        values[value_placeholder] = value
+
     response = _table.update_item(
         Key={
             "PK": f"PROJECT#{project_id}",
             "SK": f"DOC#{doc_id}",
         },
-        UpdateExpression=(
-            "SET filename = :filename, s3_key = :s3_key, "
-            "file_type = :file_type, uploaded_at = :uploaded_at, "
-            "#s = if_not_exists(#s, :pending)"
-        ),
-        ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={
-            ":filename": filename,
-            ":s3_key": s3_key,
-            ":file_type": file_type,
-            ":uploaded_at": datetime.now(timezone.utc).isoformat(),
-            ":pending": "pending_extraction",
+        UpdateExpression="SET " + ", ".join(set_clauses),
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
+        ReturnValues="ALL_NEW",
+    )
+    return response.get("Attributes")
+
+
+def put_text_document(
+    project_id,
+    doc_id,
+    filename,
+    file_type,
+    doc_type,
+    body,
+    status="extracted",
+    extra=None,
+):
+    """
+    Create a document record whose text we already have.
+
+    Most documents arrive as a file in S3 and are read by the extraction
+    Lambda.  An ingested email is different: the text came out of the
+    Gmail API, there is no object in the bucket, and so there is no
+    ``s3_key`` on the record and nothing to extract.  It is written
+    straight in at ``extracted`` so the normal embed/classify pipeline
+    picks it up from there.
+
+    Callers that list documents must therefore treat ``s3_key`` as
+    optional — see ``DocumentListView``, which skips the presigned-URL
+    step for records without one.
+
+    Returns the full stored item.
+    """
+    item = {
+        "PK": f"PROJECT#{project_id}",
+        "SK": f"DOC#{doc_id}",
+        "filename": filename,
+        "file_type": file_type,
+        "doc_type": doc_type,
+        "status": status,
+        "body": body,
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    item.update(extra or {})
+
+    _table.put_item(Item=item)
+    return item
+
+
+def set_followup_status(project_id, doc_id, followup_status):
+    """
+    Record where a document stands in the follow-up conversation.
+
+    Set to ``"reply_received"`` when a supplier answers a follow-up
+    Clarivo sent about this document.
+
+    Returns the full updated item.
+    """
+    response = _table.update_item(
+        Key={
+            "PK": f"PROJECT#{project_id}",
+            "SK": f"DOC#{doc_id}",
         },
+        UpdateExpression="SET followup_status = :followup_status",
+        ExpressionAttributeValues={":followup_status": followup_status},
         ReturnValues="ALL_NEW",
     )
     return response.get("Attributes")

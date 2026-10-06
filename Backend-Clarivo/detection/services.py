@@ -24,12 +24,66 @@ import time
 from documents.dynamo import (
     claim_document_status,
     list_documents,
+    reset_document_check_results,
     update_document_check_results,
     update_document_status,
 )
 from documents.services import process_pending
 
 logger = logging.getLogger(__name__)
+
+
+def reset_supplier_checked_invoices(project_id, supplier, reason="new evidence"):
+    """Send a supplier's already-checked invoices back to ``classified``.
+
+    A completed check is only as good as the evidence it was made
+    against.  When something new arrives about a supplier — an order, a
+    delivery note, a governing document (Part 8), or now an email from
+    that supplier — any invoice of theirs that was already judged was
+    judged without it, so the verdict is stale and has to be recomputed.
+
+    Clearing the result fields as well as the status matters: a stale
+    ``findings`` list left in place would keep appearing in the
+    discrepancy table as though it were current.
+
+    Parameters
+    ----------
+    project_id : int | str
+    supplier : str
+        The supplier name to match.  Compared case-insensitively against
+        the ``supplier`` attribute on each invoice.
+    reason : str
+        Included in the log line, so it is possible to tell a reset
+        caused by a new document from one caused by an email.
+
+    Returns
+    -------
+    list[str]
+        The doc_ids that were reset.
+    """
+    if not supplier:
+        return []
+
+    supplier_lower = supplier.strip().lower()
+    reset_doc_ids = []
+
+    for doc in list_documents(project_id):
+        if (
+            doc.get("doc_type") == "invoice"
+            and doc.get("status") == "checked"
+            and doc.get("supplier", "").strip().lower() == supplier_lower
+        ):
+            target_doc_id = doc.get("SK", "").replace("DOC#", "")
+            if not target_doc_id:
+                continue
+            print(
+                f"[RESET] Sending invoice {target_doc_id} back to 'classified' "
+                f"due to {reason} from {supplier}"
+            )
+            reset_document_check_results(project_id, target_doc_id)
+            reset_doc_ids.append(target_doc_id)
+
+    return reset_doc_ids
 
 # Gemini free-tier rate limiting: pause between detection calls.
 DETECTION_CALL_DELAY_SECONDS = 2

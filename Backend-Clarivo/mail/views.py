@@ -7,25 +7,38 @@ handshake is not a resource being listed or updated — so they are plain
 the backend uses for endpoints of this shape.
 """
 
+import base64
+import hmac
+import json
 import logging
 from datetime import datetime, timezone
 
+import boto3
 import requests
 from django.conf import settings
 from django.db import IntegrityError
 from django.shortcuts import redirect
 from rest_framework import status
 from rest_framework.authentication import TokenAuthentication
+from rest_framework.generics import get_object_or_404
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from projects.models import Project
+
+from .background import trigger_sync
 from .gmail_client import (
     GmailReconnectRequired,
     ensure_watch,
     start_watch,
     stop_watch,
 )
+from .storage import get_thread_link, list_email_records
+from .sync import sync_mailbox
+
+# How much of the latest message body goes into a thread's preview.
+SNIPPET_LENGTH = 140
 from .models import GmailAccount, OAuthState
 from .oauth import (
     REVOKE_URI,
@@ -281,6 +294,139 @@ class GmailStatusView(APIView):
         )
 
 
+class GmailPushView(APIView):
+    """
+    POST /api/gmail/push/?token=<GMAIL_PUSH_SECRET>
+
+    The Pub/Sub push endpoint.  Google delivers a notification carrying
+    only ``{emailAddress, historyId}`` — a "something changed" signal,
+    not the change itself — so this does no work beyond identifying the
+    mailbox and handing off to a background worker.
+
+    It must answer within a few seconds.  Pub/Sub treats a slow or
+    non-2xx response as a failed delivery and redelivers, so running the
+    sync inline would turn one slow mailbox into a redelivery storm.
+
+    Unauthenticated by necessity: Pub/Sub sends no DRF token.  Setting
+    ``authentication_classes = []`` also means DRF enforces no CSRF check,
+    which is what allows a POST from outside the browser at all.  The
+    shared secret in the query string is the authentication.
+    """
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        secret = settings.GMAIL_PUSH_SECRET
+        if not secret:
+            # With no secret configured there is nothing to verify, and
+            # compare_digest("", "") would happily accept any caller.
+            logger.error("GMAIL_PUSH_SECRET is not set — refusing push delivery")
+            return Response(
+                {"detail": "Push endpoint is not configured."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        token = request.query_params.get("token", "")
+        # Constant-time, so a wrong token cannot be guessed a character
+        # at a time by timing the responses.
+        if not hmac.compare_digest(token, secret):
+            logger.warning("Gmail push delivery rejected: bad token")
+            return Response(
+                {"detail": "Invalid token."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        email_address = self._email_from_envelope(request.data)
+        if not email_address:
+            # Malformed envelope.  Answered 204 on purpose: it will not
+            # parse any better on the fifth delivery, and anything other
+            # than a 2xx makes Pub/Sub retry it indefinitely.
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        account = GmailAccount.objects.filter(email__iexact=email_address).first()
+        if account is None:
+            # A mailbox we no longer hold — most likely disconnected
+            # while a watch was still live.  Acknowledged rather than
+            # errored, for the same reason as above.
+            logger.info(
+                "Gmail push for unknown mailbox %s — acknowledging", email_address
+            )
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        trigger_sync(account.pk)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @staticmethod
+    def _email_from_envelope(data):
+        """Pull emailAddress out of the Pub/Sub push envelope.
+
+        The real payload is base64 inside ``message.data``; the
+        ``historyId`` it also carries is deliberately ignored, because
+        ``sync_mailbox`` always works from its own stored cursor.  That is
+        what makes a duplicated or out-of-order notification harmless.
+        """
+        try:
+            encoded = (data or {}).get("message", {}).get("data", "")
+            if not encoded:
+                logger.warning("Gmail push envelope had no message.data")
+                return ""
+
+            # Standard base64 with padding, per the Pub/Sub push format.
+            payload = json.loads(base64.b64decode(encoded).decode("utf-8"))
+            email_address = (payload.get("emailAddress") or "").strip()
+
+            if not email_address:
+                logger.warning("Gmail push payload had no emailAddress")
+            return email_address
+        except Exception:
+            logger.exception("Could not decode the Gmail push envelope")
+            return ""
+
+
+class GmailSyncNowView(APIView):
+    """
+    POST /api/gmail/sync/
+
+    The "Sync now" button, and the endpoint the frontend polls every 60
+    seconds when push is disabled.
+
+    The sync itself runs inline so the response can report what was
+    actually found — a background-only version would have to answer
+    "started" and leave the UI guessing.  The slow part that follows
+    (waiting on the extraction Lambda, embedding, classification,
+    detection) is handed to the background worker.
+    """
+
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        account = GmailAccount.objects.filter(user=request.user).first()
+        if account is None:
+            return Response(
+                {"detail": "No Gmail account is connected."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            summary = sync_mailbox(account)
+        except GmailReconnectRequired:
+            # 409 rather than 401: the request was perfectly valid, it is
+            # the stored Google grant that is no longer usable.
+            return Response(
+                {"needs_reconnect": True},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # Hand off the follow-up work, seeding it with the projects this
+        # sync just touched — the worker's own sync will find nothing new,
+        # so without the seed it would have nothing to process.
+        trigger_sync(account.pk, project_ids=summary.get("project_ids"))
+
+        return Response(summary, status=status.HTTP_200_OK)
+
+
 class GmailDisconnectView(APIView):
     """
     POST /api/gmail/disconnect/
@@ -364,3 +510,208 @@ class GmailDisconnectView(APIView):
                 account.email,
                 exc_info=True,
             )
+
+
+# ---------------------------------------------------------------------------
+# Reading ingested mail
+# ---------------------------------------------------------------------------
+
+class _ProjectMailView(APIView):
+    """Shared ownership check for the project-scoped mail endpoints.
+
+    An email is routed into a project, so a project's mail is readable by
+    exactly the person who owns that project and nobody else.
+    """
+
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get_project(self, request, project_id):
+        return get_object_or_404(
+            Project.objects.filter(owner=request.user),
+            pk=project_id,
+        )
+
+    def thread_link(self, request, thread_id):
+        """The thread's link row, or None.
+
+        Looked up through the requesting user's own connected mailbox,
+        because a Gmail thread id is only unique within one mailbox.  A
+        user who has since disconnected keeps their ingested mail — it is
+        project data now — so the absence of an account is normal and
+        simply means no link can be resolved.
+        """
+        account = GmailAccount.objects.filter(user=request.user).first()
+        if account is None or not thread_id:
+            return None
+        return get_thread_link(account.email, thread_id)
+
+
+def _sorted_oldest_first(records):
+    """Order a thread's messages chronologically.
+
+    ISO-8601 timestamps sort lexicographically in the same order as the
+    instants they represent, so a plain string sort is correct here.
+    Records with no received_at sort first rather than crashing the sort.
+    """
+    return sorted(records, key=lambda record: record.get("received_at") or "")
+
+
+class MailThreadListView(_ProjectMailView):
+    """
+    GET /api/projects/<project_id>/mail/threads/
+
+    One entry per conversation, most recently active first — the inbox
+    list for a project.
+    """
+
+    def get(self, request, project_id):
+        project = self.get_project(request, project_id)
+
+        threads = {}
+        for record in list_email_records(project.pk):
+            # A message with no thread id becomes a thread of its own
+            # rather than being lumped in with every other such message.
+            key = record.get("thread_id") or f"msg:{record.get('gmail_message_id', '')}"
+            threads.setdefault(key, []).append(record)
+
+        entries = []
+        for key, records in threads.items():
+            ordered = _sorted_oldest_first(records)
+            first, latest = ordered[0], ordered[-1]
+
+            # The routing reason belongs to the message that pulled the
+            # thread into this project, which is the first inbound one —
+            # an outbound follow-up Clarivo sent has no routing reason.
+            first_inbound = next(
+                (r for r in ordered if r.get("direction") == "inbound"),
+                None,
+            )
+
+            # Unique senders in the order they first appear, so the list
+            # reads chronologically rather than arbitrarily.
+            participants = list(
+                dict.fromkeys(
+                    r["from_email"] for r in ordered if r.get("from_email")
+                )
+            )
+
+            thread_id = first.get("thread_id") or ""
+            link = self.thread_link(request, thread_id)
+
+            entries.append({
+                "thread_id": thread_id,
+                "subject": first.get("subject", ""),
+                "participants": participants,
+                "last_message_at": latest.get("received_at", ""),
+                "message_count": len(ordered),
+                "has_attachments": any(
+                    r.get("attachment_doc_ids") for r in ordered
+                ),
+                "route_reason": (
+                    first_inbound.get("route_reason", "") if first_inbound else ""
+                ),
+                "snippet": (latest.get("body_text") or "")[:SNIPPET_LENGTH],
+                "linked_invoice_doc_id": (
+                    link.get("invoice_doc_id") if link else None
+                ) or None,
+            })
+
+        entries.sort(key=lambda entry: entry["last_message_at"] or "", reverse=True)
+        return Response(entries, status=status.HTTP_200_OK)
+
+
+class MailThreadDetailView(_ProjectMailView):
+    """
+    GET /api/projects/<project_id>/mail/threads/<thread_id>/
+
+    Every message in one conversation, oldest first, with each message's
+    attachments resolved to viewable documents.
+    """
+
+    def get(self, request, project_id, thread_id):
+        project = self.get_project(request, project_id)
+
+        records = [
+            record
+            for record in list_email_records(project.pk)
+            if (record.get("thread_id") or "") == thread_id
+        ]
+
+        if not records:
+            return Response(
+                {"detail": "No such thread in this project."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        s3_client = boto3.client(
+            "s3",
+            region_name=settings.AWS_REGION,
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+        )
+
+        messages = []
+        for record in _sorted_oldest_first(records):
+            messages.append({
+                "gmail_message_id": record.get("gmail_message_id", ""),
+                "direction": record.get("direction", "inbound"),
+                "from_name": record.get("from_name", ""),
+                "from_email": record.get("from_email", ""),
+                "to": record.get("to", ""),
+                "subject": record.get("subject", ""),
+                "received_at": record.get("received_at", ""),
+                "body_text": record.get("body_text", ""),
+                "attachments": self._attachments(
+                    s3_client, project.pk, record.get("attachment_doc_ids") or []
+                ),
+            })
+
+        return Response(messages, status=status.HTTP_200_OK)
+
+    @staticmethod
+    def _attachments(s3_client, project_id, doc_ids):
+        """Resolve attachment doc ids to viewable document summaries.
+
+        ``status`` is included so the UI can show that a document is
+        still being read rather than rendering it as though it were ready.
+        """
+        from documents.dynamo import get_document
+
+        attachments = []
+        for doc_id in doc_ids:
+            doc = get_document(project_id, doc_id)
+            if doc is None:
+                # The document was deleted, or never finished being
+                # written.  Reported rather than hidden, so the message
+                # does not silently claim fewer attachments than it had.
+                attachments.append({
+                    "doc_id": doc_id,
+                    "filename": "",
+                    "status": "missing",
+                    "view_url": None,
+                })
+                continue
+
+            # Guarded for the same reason as the documents list: a record
+            # without an s3_key has no object to presign.
+            s3_key = doc.get("s3_key")
+            attachments.append({
+                "doc_id": doc_id,
+                "filename": doc.get("filename", ""),
+                "status": doc.get("status", ""),
+                "view_url": (
+                    s3_client.generate_presigned_url(
+                        "get_object",
+                        Params={
+                            "Bucket": settings.S3_BUCKET_NAME,
+                            "Key": s3_key,
+                        },
+                        ExpiresIn=600,  # 10 minutes
+                    )
+                    if s3_key
+                    else None
+                ),
+            })
+
+        return attachments

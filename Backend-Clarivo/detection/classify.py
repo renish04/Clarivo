@@ -1,7 +1,7 @@
 import os
 from google import genai
 from google.genai import types
-from documents.dynamo import get_document, update_document_classification, list_documents, reset_document_check_results
+from documents.dynamo import get_document, update_document_classification
 
 # Initialize the Gemini client. It will automatically pick up GEMINI_API_KEY from the environment.
 gemini_client = genai.Client()
@@ -77,18 +77,18 @@ def classify_document(project_id, doc_id):
     update_document_classification(project_id, doc_id, result_text, "classified", supplier_name)
     
     if result_text in ("order", "delivery", "governing"):
-        supplier = supplier_name
-        if supplier:
-            supplier_lower = supplier.strip().lower()
-            all_docs = list_documents(project_id)
-            for doc in all_docs:
-                if (doc.get("doc_type") == "invoice" and 
-                    doc.get("status") == "checked" and 
-                    doc.get("supplier", "").strip().lower() == supplier_lower):
-                    
-                    target_doc_id = doc.get("SK", "").replace("DOC#", "")
-                    print(f"[CLASSIFY] Resetting invoice {target_doc_id} back to 'classified' due to new evidence from {supplier}")
-                    reset_document_check_results(project_id, target_doc_id)
+        # New evidence about this supplier invalidates any verdict already
+        # reached without it.  Shared with email ingestion, which does the
+        # same thing when a supplier replies.
+        # Imported here rather than at module level: detection.services
+        # pulls in documents.services, which imports this module back.
+        from detection.services import reset_supplier_checked_invoices
+
+        reset_supplier_checked_invoices(
+            project_id,
+            supplier_name,
+            reason=f"a new {result_text} document",
+        )
 
     print(f"--- [CLASSIFY] Complete ---")
     return result_text
