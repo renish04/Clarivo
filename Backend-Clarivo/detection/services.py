@@ -50,8 +50,10 @@ def reset_supplier_checked_invoices(project_id, supplier, reason="new evidence")
     ----------
     project_id : int | str
     supplier : str
-        The supplier name to match.  Compared case-insensitively against
-        the ``supplier`` attribute on each invoice.
+        The supplier name to match.  Compared by normalised key against
+        the ``supplier`` attribute on each invoice, so "Acme Pvt. Ltd."
+        on a contact still finds invoices issued as "ACME PRIVATE
+        LIMITED" -- an exact comparison silently reset nothing.
     reason : str
         Included in the log line, so it is possible to tell a reset
         caused by a new document from one caused by an email.
@@ -61,17 +63,22 @@ def reset_supplier_checked_invoices(project_id, supplier, reason="new evidence")
     list[str]
         The doc_ids that were reset.
     """
-    if not supplier:
+    # Imported here: mail.storage sits in an app that itself imports
+    # from detection, and a module-level import would make the two
+    # depend on each other at load time.
+    from mail.storage import normalize_supplier_name
+
+    supplier_key = normalize_supplier_name(supplier)
+    if not supplier_key:
         return []
 
-    supplier_lower = supplier.strip().lower()
     reset_doc_ids = []
 
     for doc in list_documents(project_id):
         if (
             doc.get("doc_type") == "invoice"
             and doc.get("status") == "checked"
-            and doc.get("supplier", "").strip().lower() == supplier_lower
+            and normalize_supplier_name(doc.get("supplier") or "") == supplier_key
         ):
             target_doc_id = doc.get("SK", "").replace("DOC#", "")
             if not target_doc_id:

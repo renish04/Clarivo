@@ -65,9 +65,10 @@ def get_project_context(project_id, exclude_doc_id, query_text, token_budget=200
                 doc_meta[doc_id] = (
                     doc_item["filename"],
                     doc_item.get("doc_type", ""),
+                    doc_item.get("reply_to_invoice_doc_id", ""),
                 )
             else:
-                doc_meta[doc_id] = (f"Unknown_{doc_id}", "")
+                doc_meta[doc_id] = (f"Unknown_{doc_id}", "", "")
         return doc_meta[doc_id]
 
     # 4. Walk the ranked results in order, building a labeled context string
@@ -84,12 +85,16 @@ def get_project_context(project_id, exclude_doc_id, query_text, token_budget=200
         if not chunk_doc_id or not chunk_text:
             continue
             
-        filename, doc_type = get_doc_meta(chunk_doc_id)
+        filename, doc_type, reply_to_invoice = get_doc_meta(chunk_doc_id)
         
         # Format the block.  Correspondence is marked in the label so
         # the detection prompt can weigh an email as a claim somebody
         # made, rather than as a procurement record of equal standing.
-        if doc_type == "correspondence":
+        # A reply to this very invoice's follow-up says so, because the
+        # follow-up it answers is deliberately not in the context.
+        if doc_type == "correspondence" and reply_to_invoice and reply_to_invoice == str(exclude_doc_id):
+            label = f"[from: {filename} — SUPPLIER CORRESPONDENCE — REPLY TO A FOLLOW-UP ABOUT THIS INVOICE]"
+        elif doc_type == "correspondence":
             label = f"[from: {filename} — SUPPLIER CORRESPONDENCE]"
         else:
             label = f"[from: {filename}]"

@@ -38,7 +38,9 @@ from django.conf import settings
 from documents.dynamo import (
     confirm_document,
     get_document,
+    list_documents,
     put_text_document,
+    reset_document_check_results,
     set_followup_status,
 )
 
@@ -47,6 +49,7 @@ from .routing import route_email
 from .storage import (
     find_contact_by_email,
     get_thread_link,
+    normalize_supplier_name,
     put_email_record,
     put_thread_link,
     update_email_doc_ids,
@@ -256,6 +259,12 @@ def ingest_message(account, service, message_id):
                 "source_email_id": parsed["gmail_message_id"] or message_id,
                 "source_thread_id": thread_id,
                 "sender_email": from_email,
+                # Set only for a reply on a follow-up thread.  Detection
+                # reads it to label this email as the answer to that
+                # invoice's follow-up -- the follow-up itself is kept out
+                # of the context on purpose, so without this a reply of
+                # "corrected, thanks" has nothing tying it to an invoice.
+                **({"reply_to_invoice_doc_id": invoice_doc_id} if invoice_doc_id else {}),
             },
         )
         logger.info(
@@ -293,7 +302,12 @@ def ingest_message(account, service, message_id):
     )
 
     # -- Invalidate stale verdicts ------------------------------------
-    _handle_new_evidence(project_id, invoice_doc_id, from_email)
+    _handle_new_evidence(
+        project_id,
+        invoice_doc_id,
+        from_email,
+        email_text=f"{headers.get('subject', '')}\n{cleaned_body}",
+    )
 
     return {
         "project_id": project_id,
@@ -389,35 +403,133 @@ def _ingest_attachment(
     return doc_id
 
 
-def _handle_new_evidence(project_id, invoice_doc_id, from_email):
+# Reference-like tokens in an email -- invoice numbers such as
+# "INV-1043" or "A/2024/77".  Requiring both a letter and a digit keeps
+# dates, amounts and quantities, which appear on every invoice, from
+# matching every invoice in the project.
+_REFERENCE_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?=[A-Za-z0-9/_-]*[0-9])(?=[A-Za-z0-9/_-]*[A-Za-z])"
+    r"[A-Za-z0-9][A-Za-z0-9/_-]{3,}"
+)
+
+# A supplier key shorter than this is too likely to occur inside an
+# unrelated word to count as the email naming that supplier.
+_MIN_SUPPLIER_KEY_LENGTH = 3
+
+# The verdicts an email can still change.  Clean and auto-resolved
+# invoices are already settled; reopening them on an email that names
+# nobody would only spend detection calls to reach the same answer.
+_OPEN_VERDICTS = ("flagged", "needs_more_info")
+
+
+def _reset_invoice(project_id, doc_id, reason):
+    """Send one checked invoice back to ``classified`` for a re-check."""
+    logger.info("Sending invoice %s back to 'classified' due to %s", doc_id, reason)
+    reset_document_check_results(project_id, doc_id)
+
+
+def _checked_invoices(project_id):
+    """``(doc_id, item)`` for every invoice that already has a verdict."""
+    for doc in list_documents(project_id):
+        doc_id = doc.get("SK", "").replace("DOC#", "")
+        if doc_id and doc.get("doc_type") == "invoice" and doc.get("status") == "checked":
+            yield doc_id, doc
+
+
+def _invoices_mentioned(project_id, email_text):
+    """Checked invoices the email text points at, as a list of doc ids.
+
+    An invoice counts as mentioned when the email names its supplier, or
+    quotes a reference that appears on the invoice -- typically its
+    invoice number, which is how people actually write about one.
+    """
+    if not email_text:
+        return []
+
+    words = re.sub(r"[^a-z0-9 ]+", " ", email_text.lower()).split()
+    padded_text = f" {' '.join(words)} "
+    tokens = {token.lower() for token in _REFERENCE_TOKEN.findall(email_text)}
+
+    mentioned = []
+    for doc_id, doc in _checked_invoices(project_id):
+        supplier_key = normalize_supplier_name(doc.get("supplier") or "")
+        names_supplier = (
+            len(supplier_key) >= _MIN_SUPPLIER_KEY_LENGTH
+            and f" {supplier_key} " in padded_text
+        )
+
+        haystack = f"{doc.get('filename') or ''}\n{doc.get('body') or ''}".lower()
+        quotes_reference = any(token in haystack for token in tokens)
+
+        if names_supplier or quotes_reference:
+            mentioned.append(doc_id)
+    return mentioned
+
+
+def _handle_new_evidence(project_id, invoice_doc_id, from_email, email_text=""):
     """Mark follow-up replies and invalidate verdicts the email undercuts.
 
-    An email is new information about a supplier, so any invoice of
-    theirs that was already checked was checked without it.
+    An email is new information, so any invoice it bears on was judged
+    without it and has to go back to ``classified`` to be checked again.
+    Which invoices it bears on is decided by the strongest signal there
+    is, in this order:
+
+    1. A reply on a thread Clarivo started about one invoice -- certain.
+    2. The sender is a recorded contact of a supplier -- every checked
+       invoice of that supplier's.
+    3. The email names a supplier or quotes an invoice reference.
+    4. None of the above: the email was still routed to this project, so
+       it is evidence about *something* here.  Every open case (flagged
+       or needs_more_info) is re-checked against it, and settled ones
+       are left alone.
+
+    Before (3) and (4) existed, an email that arrived by project name
+    from an address Clarivo had not learned yet reset nothing at all --
+    the reply sat in the Files tab while the invoice it answered kept
+    its old verdict, and Check Project found nothing to re-check.
     """
     from detection.services import reset_supplier_checked_invoices
 
     if invoice_doc_id:
-        # A reply on a thread Clarivo started about one specific invoice.
         set_followup_status(project_id, invoice_doc_id, "reply_received")
 
         invoice = get_document(project_id, invoice_doc_id)
         if invoice and invoice.get("status") == "checked":
-            from documents.dynamo import reset_document_check_results
-
-            logger.info(
-                "Reply received on invoice %s — sending it back to 'classified'",
-                invoice_doc_id,
-            )
-            reset_document_check_results(project_id, invoice_doc_id)
+            _reset_invoice(project_id, invoice_doc_id, "a reply to its follow-up")
         return
 
-    # Otherwise, if we know which supplier this address belongs to, every
-    # checked invoice of theirs is now judged on incomplete evidence.
+    reset = set()
+
     contact = find_contact_by_email(project_id, from_email)
-    if contact and contact.get("supplier_name"):
-        reset_supplier_checked_invoices(
+    supplier_known = bool(contact and contact.get("supplier_name"))
+    if supplier_known:
+        reset.update(
+            reset_supplier_checked_invoices(
+                project_id,
+                contact["supplier_name"],
+                reason="an email from the supplier",
+            )
+        )
+
+    mentioned = [doc_id for doc_id in _invoices_mentioned(project_id, email_text) if doc_id not in reset]
+    for doc_id in mentioned:
+        _reset_invoice(project_id, doc_id, "an email that mentions it")
+    reset.update(mentioned)
+
+    # Nothing identified the email, so fall back to the open cases.  Not
+    # when the sender is a known supplier: an email from supplier X says
+    # nothing about supplier Y's invoices.
+    if not reset and not supplier_known:
+        for doc_id, doc in _checked_invoices(project_id):
+            if doc.get("discrepancy_status") in _OPEN_VERDICTS:
+                _reset_invoice(project_id, doc_id, "an email routed to its project")
+                reset.add(doc_id)
+
+    if reset:
+        logger.info(
+            "Email from %s reopened %d invoice(s) in project %s for re-checking",
+            from_email,
+            len(reset),
             project_id,
-            contact["supplier_name"],
-            reason="an email from the supplier",
         )

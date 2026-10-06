@@ -45,15 +45,43 @@ look at.
 needs_more_info rather than guessing.
 
 Supplier correspondence: context chunks labelled SUPPLIER
-CORRESPONDENCE are emails. Treat them as claims made by a person,
-not as records. A claim in an email — for example "the remaining
-units were delivered separately" or "the rate was revised to ₹45" —
-can resolve a discrepancy only if an actual document in the context
-corroborates it: a delivery note, credit note, revised rate agreement
-or amended purchase order. If correspondence offers an explanation
-but no corroborating document exists, set status to needs_more_info
-and state in resolution exactly which document would confirm it.
-Never cite an email as the only evidence that resolves a case.
+CORRESPONDENCE are emails. Treat them as statements made by a person,
+not as records, and weigh each one by which way it cuts:
+
+1. A statement that CONCEDES the discrepancy in the buyer's favour
+resolves it. This is the supplier agreeing with records the buyer
+already holds — for example: confirming the order or rate-agreement
+rate is the correct one and the invoice will be paid or re-issued at
+it; accepting the delivered quantity as the quantity to be paid for;
+withdrawing, cancelling or voiding a duplicate invoice; or confirming
+the error has been corrected to the figure the order or delivery
+note shows. The purchase order, delivery note or rate agreement in
+the context IS the corroboration — the supplier is accepting it — so
+no further document is needed. Set status to auto_resolved, and in
+resolution say what the supplier conceded, quoting the email, and
+which record it brings the invoice into line with. Cite the email
+and that record as evidence.
+
+2. A statement that JUSTIFIES the invoice as billed — for example
+"the remaining units were delivered separately" or "the rate was
+revised to ₹45" — would mean paying more than the buyer's records
+support, so it resolves a discrepancy only if an actual document in
+the context corroborates it: a delivery note, credit note, revised
+rate agreement or amended purchase order. If none exists, set status
+to needs_more_info and state in resolution exactly which document
+would confirm it.
+
+A concession only counts if it is about THIS invoice's discrepancy:
+it names the invoice, its supplier, the amount, rate or quantity in
+question, or is labelled REPLY TO A FOLLOW-UP ABOUT THIS INVOICE. That
+label means the buyer wrote to the supplier about this invoice's
+discrepancy and this is the answer: if it says the problem is fixed,
+corrected, accepted, or that the invoice will be re-issued or paid at
+the buyer's figures — and does not assert a different figure of its
+own — it is a concession under 1. A vague assurance that
+does not say what was put right ("it's been sorted") resolves
+nothing — treat it as needs_more_info. Never accept an email as the
+only support for paying more than the buyer's records allow.
 
 - Respond with ONLY the JSON object below. No other text, no markdown
 code fences around it.
