@@ -47,17 +47,28 @@ def get_project_context(project_id, exclude_doc_id, query_text, token_budget=200
     finally:
         client.close()
         
-    # 3. Look up filenames efficiently
-    doc_filenames = {}
+    # 3. Look up each source document's filename and type efficiently
+    doc_meta = {}
     
-    def get_filename(doc_id):
-        if doc_id not in doc_filenames:
+    def get_doc_meta(doc_id):
+        """Return (filename, doc_type) for a chunk's source document.
+
+        Cached per doc_id, because one document contributes many
+        chunks and re-reading it per chunk would turn a single lookup
+        into dozens.  doc_type comes out of the same item the filename
+        already came from, so labelling correspondence costs no extra
+        DynamoDB reads.
+        """
+        if doc_id not in doc_meta:
             doc_item = get_document(project_id, doc_id)
             if doc_item and "filename" in doc_item:
-                doc_filenames[doc_id] = doc_item["filename"]
+                doc_meta[doc_id] = (
+                    doc_item["filename"],
+                    doc_item.get("doc_type", ""),
+                )
             else:
-                doc_filenames[doc_id] = f"Unknown_{doc_id}"
-        return doc_filenames[doc_id]
+                doc_meta[doc_id] = (f"Unknown_{doc_id}", "")
+        return doc_meta[doc_id]
 
     # 4. Walk the ranked results in order, building a labeled context string
     print(f"[RETRIEVAL] Assembling context blocks (budget: {token_budget} tokens)...")
@@ -73,10 +84,17 @@ def get_project_context(project_id, exclude_doc_id, query_text, token_budget=200
         if not chunk_doc_id or not chunk_text:
             continue
             
-        filename = get_filename(chunk_doc_id)
+        filename, doc_type = get_doc_meta(chunk_doc_id)
         
-        # Format the block
-        block = f"[from: {filename}]\n{chunk_text}\n\n"
+        # Format the block.  Correspondence is marked in the label so
+        # the detection prompt can weigh an email as a claim somebody
+        # made, rather than as a procurement record of equal standing.
+        if doc_type == "correspondence":
+            label = f"[from: {filename} — SUPPLIER CORRESPONDENCE]"
+        else:
+            label = f"[from: {filename}]"
+
+        block = f"{label}\n{chunk_text}\n\n"
         
         # Approximate tokens (roughly word_count * 1.3)
         words = len(block.split())

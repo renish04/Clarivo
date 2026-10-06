@@ -43,6 +43,18 @@ resolution. Do not flag something a human would not actually need to
 look at.
 - If you genuinely do not have enough information to decide, say
 needs_more_info rather than guessing.
+
+Supplier correspondence: context chunks labelled SUPPLIER
+CORRESPONDENCE are emails. Treat them as claims made by a person,
+not as records. A claim in an email — for example "the remaining
+units were delivered separately" or "the rate was revised to ₹45" —
+can resolve a discrepancy only if an actual document in the context
+corroborates it: a delivery note, credit note, revised rate agreement
+or amended purchase order. If correspondence offers an explanation
+but no corroborating document exists, set status to needs_more_info
+and state in resolution exactly which document would confirm it.
+Never cite an email as the only evidence that resolves a case.
+
 - Respond with ONLY the JSON object below. No other text, no markdown
 code fences around it.
 
