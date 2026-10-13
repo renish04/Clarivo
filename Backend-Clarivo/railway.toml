@@ -1,7 +1,0 @@
-[build]
-builder = "NIXPACKS"
-buildCommand = "pip install -r requirements.txt && python -c \"from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-small-en-v1.5')\" && python manage.py collectstatic --noinput"
-
-[deploy]
-startCommand = "python manage.py migrate --noinput && gunicorn clarivo_backend.wsgi:application --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 180"
-
