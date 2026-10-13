@@ -58,3 +58,7 @@ urllib3==2.7.0
 validators==0.35.0
 weaviate-client==4.23.0
 win32_setctime==1.2.0
+gunicorn==23.0.0
+whitenoise==6.9.0
+dj-database-url==2.3.0
+psycopg[binary]==3.2.9
